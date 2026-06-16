@@ -59,3 +59,21 @@ export const chatService = {
 };
 
 export default api;
+
+api.interceptors.request.use((config) => {
+  console.log(
+    `[API] ${config.method?.toUpperCase()} ${config.baseURL}${config.url}`
+  );
+  return config;
+});
+
+api.interceptors.response.use(
+  (response) => {
+    console.log('[API] Response:', response.data);
+    return response;
+  },
+  (error) => {
+    console.error('[API] Error:', error);
+    return Promise.reject(error);
+  }
+);
