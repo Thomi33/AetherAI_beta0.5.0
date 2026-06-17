@@ -2,21 +2,44 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
+import logging
 
 from core.config import settings
+from core.aether_service import AetherService
 from api.routes import chat
 
-# Lifespan context
+# =====================================================================
+# LOGGING
+# =====================================================================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s | %(name)s | %(levelname)s | %(message)s'
+)
+
+logger = logging.getLogger(__name__)
+
+# =====================================================================
+# LIFESPAN
+# =====================================================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    print(f"🚀 Starting Aether API on {settings.API_HOST}:{settings.API_PORT}")
-    print(f"📡 CORS Origins: {settings.CORS_ORIGINS}")
-    yield
-    # Shutdown
-    print("👋 Shutting down Aether API")
+    logger.info(f"🚀 Starting Aether API on {settings.API_HOST}:{settings.API_PORT}")
+    logger.info(f"📡 CORS Origins: {settings.CORS_ORIGINS}")
 
-# Create FastAPI app
+    try:
+        AetherService.initialize()
+        logger.info("✅ Aether Agent inicializado exitosamente")
+    except Exception as e:
+        logger.warning(f"⚠️ Aether se inicializará on-demand: {e}")
+
+    yield
+
+    logger.info("👋 Shutting down Aether API")
+
+
+# =====================================================================
+# APP
+# =====================================================================
 app = FastAPI(
     title="Aether API",
     description="API para el agente local Aether",
@@ -24,18 +47,25 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS Middleware
+# =====================================================================
+# CORS (FIX REAL PARA OPTIONS 400)
+# =====================================================================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
+    allow_origins=["*"],  # CLI only, permissive CORS
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Include routers
-app.include_router(chat.router)
+# =====================================================================
+# ROUTERS
+# =====================================================================
+app.include_router(chat.router, prefix="/api")
 
+# =====================================================================
+# ROOT
+# =====================================================================
 @app.get("/")
 async def root():
     return {
@@ -53,6 +83,9 @@ async def health_check():
         "ollama": settings.OLLAMA_HOST
     }
 
+# =====================================================================
+# ERROR HANDLER
+# =====================================================================
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
     return JSONResponse(
@@ -60,6 +93,9 @@ async def global_exception_handler(request, exc):
         content={"detail": "Internal server error", "error": str(exc)}
     )
 
+# =====================================================================
+# RUN
+# =====================================================================
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(

@@ -1,153 +1,107 @@
-# 🤖 Aether - Agente Local Inteligente
+# 🤖 Aether - Agente Local Inteligente (CLI)
 
-Interfaz web elegante tipo **ChatGPT/OpenWebUI** para un agente local de IA basado en **CrewAI** + **Ollama** (Gemma 4:12B).
+Agente de IA basado en **CrewAI** + **Ollama** (Gemma 4:12B). Terminal-first, sin dependencias de web UI.
 
 ## 📁 Estructura del Proyecto
 
 ```
 mi_proyecto_crew/
-├── frontend/                    # React + Vite (Puerto 5173)
-│   ├── src/
-│   │   ├── components/
-│   │   │   ├── ui/             # Componentes base
-│   │   │   ├── chat/           # Componentes de chat
-│   │   │   ├── sidebar/        # Sidebar.jsx ✅
-│   │   │   └── header/         # Header.jsx ✅
-│   │   ├── pages/
-│   │   │   └── ChatPage.jsx    # ✅
-│   │   ├── services/
-│   │   │   └── api.js          # ✅
-│   │   ├── context/
-│   │   ├── hooks/
-│   │   ├── utils/
-│   │   │   └── constants.js    # ✅
-│   │   ├── App.jsx             # ✅
-│   │   └── main.jsx
-│   ├── package.json
-│   └── vite.config.js
-│
-├── backend/                     # FastAPI (Puerto 8000)
+├── cli/                         # Interfaz CLI
+│   └── main.py                  # Loop interactivo de terminal
+├── backend/                     # FastAPI (opcional, para integración)
 │   ├── api/
-│   │   ├── main.py             # ✅ FastAPI app
+│   │   ├── main.py             # FastAPI app
 │   │   ├── routes/
-│   │   │   └── chat.py         # ✅ Endpoints
+│   │   │   └── chat.py         # Endpoints
 │   │   └── models/
-│   │       └── schemas.py      # ✅ Pydantic models
+│   │       └── schemas.py      # Pydantic models
 │   ├── core/
-│   │   └── config.py           # ✅ Settings
-│   ├── requirements.txt        # ✅
-│   ├── .env                    # ✅
+│   │   ├── aether_service.py   # Servicio singleton
+│   │   └── config.py           # Configuración
+│   ├── requirements.txt
+│   ├── .env
 │   └── README.md
-│
-├── jarvis.py                   # Agente CrewAI (ORIGINAL)
+├── jarvis.py                   # Agente CrewAI + lógica de IA
+├── run.py                      # Entrypoint principal
 ├── env/                        # Entorno virtual Python
-├── start-aether.sh             # Script para iniciar todo
-├── .vscode/
-│   └── tasks.json              # Tasks para VS Code
-└── manual_arch.md
+└── .vscode/
+    └── tasks.json              # Tasks para VS Code
 ```
 
 ## 🚀 Instalación Rápida
 
 ### Requisitos
 - Python 3.10+
-- Node.js 18+
 - Ollama corriendo en `http://localhost:11434`
 
 ### Setup Inicial
 
-#### 1. Backend
 ```bash
 cd backend
 pip install -r requirements.txt
 ```
 
-#### 2. Frontend
-```bash
-cd frontend
-npm install
-```
-
 ## ▶️ Ejecutar Aether
 
-### Opción 1: Script Automático (Recomendado)
+### Opción 1: Ejecutar desde CLI (Recomendado)
 ```bash
-chmod +x start-aether.sh
-./start-aether.sh
+python run.py
 ```
 
-Abre en navegador:
-- **Frontend**: http://localhost:5173
-- **API Docs**: http://localhost:8000/docs
+Verás:
+```
+🤖 [SISTEMA] Secuencia de inicio completada.
+🎙️  Aether: Buenos días, Thomas. Matrices listas. Modo Autónomo: ACTIVO.
 
-### Opción 2: Manual (2 Terminales)
-
-**Terminal 1 - Backend:**
-```bash
-cd backend
-python -m uvicorn api.main:app --reload
+🧠 Creador: _
 ```
 
-**Terminal 2 - Frontend:**
-```bash
-cd frontend
-npm run dev
-```
-
-### Opción 3: VS Code Tasks
+### Opción 2: VS Code Tasks
 1. Abre la paleta de comandos: `Ctrl+Shift+P`
 2. Escribe: "Run Task"
-3. Selecciona:
-   - `Backend: Run FastAPI`
-   - `Frontend: Run Dev Server`
+3. Selecciona: `Backend: Run FastAPI` (si deseas el API también)
 
 ## 🏗️ Arquitectura
 
 ```
 ┌─────────────────────────────────────────────┐
-│          Frontend (React + Vite)            │
-│  - ChatPage (UI estilo ChatGPT/OpenWebUI)   │
-│  - Sidebar (Historial de conversaciones)    │
-│  - Header (Dark mode, Menu)                 │
-│  - Animations (Framer Motion)               │
+│     CLI (Terminal - Python stdin)           │
+│  - Loop interactivo de entrada              │
+│  - Salida en terminal                       │
+│  - Manejo de comandos especiales            │
 └──────────────┬──────────────────────────────┘
-               │ HTTP/JSON
-               ↓
-┌─────────────────────────────────────────────┐
-│      Backend (FastAPI) - Puerto 8000        │
-│  - GET /                    Info del API    │
-│  - POST /api/chat           Enviar mensaje  │
-│  - GET /api/conversations   Listar chats    │
-│  - GET /api/agent/status    Estado agente  │
-└──────────────┬──────────────────────────────┘
-               │ IPC/Subprocess
+               │ Python import
                ↓
 ┌─────────────────────────────────────────────┐
 │   Agente (jarvis.py - CrewAI + Ollama)      │
 │  - LocalLLM: Gemma 4:12B                    │
 │  - Memory: SQLite (conversaciones)          │
 │  - Tools: Sistema, búsqueda, etc.           │
+│  - Ejecución autónoma/manual                │
 └─────────────────────────────────────────────┘
 ```
 
-## 📋 API Endpoints
+## 📖 Uso
 
-| Método | Endpoint | Descripción |
-|--------|----------|-------------|
-| GET | `/` | Info del servidor |
-| GET | `/health` | Health check |
-| POST | `/api/chat` | Enviar mensaje al agente |
-| GET | `/api/conversations` | Listar conversaciones |
-| GET | `/api/conversations/{id}` | Obtener una conversación |
-| DELETE | `/api/conversations/{id}` | Eliminar conversación |
-| GET | `/api/agent/status` | Estado del agente |
+Interactúa directamente con el agente:
 
-## 🎨 Tecnologías Frontend
+```
+🧠 Creador: ¿cuál es la capital de España?
+🤖 [Javier PROCESANDO...]
+🎙️  Javier: La capital de España es Madrid, ubicada en la región de la Comunidad de Madrid...
 
-- **React 19** - UI
-- **Vite** - Build tool
-- **Tailwind CSS** - Estilos (con dark mode)
-- **Framer Motion** - Animaciones
+🧠 Creador: abre Firefox
+🚀 [MEMORIA]: firefox conocido. Lanzando directamente...
+🎙️  Javier: Firefox lanzado exitosamente.
+
+🧠 Creador: salir
+🤖 [SISTEMA] Desconectando sistemas. Hasta luego.
+```
+
+### Comandos Especiales
+- `salir`, `adios`, `exit`, `quit` - Terminar sesión
+- `mira`, `observa`, `captura` - Visión de pantalla
+- `ejecuta`, `abre`, `lanza` - Ejecutar programas conocidos
 - **lucide-react** - Iconos
 - **Axios** - HTTP client
 - **react-router-dom** - Enrutamiento

@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     API_RELOAD: bool = True
     
     # CORS
-    CORS_ORIGINS: list = ["http://localhost:5173", "http://localhost:3000"]
+    CORS_ORIGINS: list = ["*"]  # CLI-only backend
     
     # Agent
     AGENT_NAME: str = "Aether"

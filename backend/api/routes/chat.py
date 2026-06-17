@@ -1,100 +1,33 @@
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-from datetime import datetime
-from typing import List
+from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
+import json
+import asyncio
 
-router = APIRouter(prefix="/api", tags=["chat"])
+from core.aether_service import AetherService
 
-# In-memory storage (será reemplazado por DB real)
-conversations_store = {}
-conversation_id_counter = 1
-message_id_counter = 1
-
-class Message(BaseModel):
-    content: str
-
-class ChatRequest(BaseModel):
-    message: str
-
-class ChatResponse(BaseModel):
-    id: int
-    role: str
-    content: str
-    timestamp: str
+router = APIRouter()
 
 @router.post("/chat")
-async def send_message(request: ChatRequest):
-    """
-    Envía un mensaje al agente y recibe respuesta.
-    Actualmente retorna mock response. TODO: Integrar con jarvis.py
-    """
-    if not request.message.strip():
-        raise HTTPException(status_code=400, detail="Message cannot be empty")
-    
-    # Mock response - sin integración con jarvis.py todavía
-    return {
-        "response": "Aether backend online",
-        "agent_status": "ready"
-    }
+async def chat(request: dict):
+    message = request.get("message", "")
 
-@router.get("/conversations")
-async def get_conversations():
-    """
-    Obtiene lista de conversaciones recientes.
-    """
-    try:
-        conversations = [
-            {
-                "id": 1,
-                "title": "Nueva conversación",
-                "created_at": datetime.now().isoformat(),
-                "updated_at": datetime.now().isoformat()
-            }
-        ]
-        return conversations
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    async def stream_response():
+        result = AetherService.process_message(message)
+        response_text = result["response"]
 
-@router.get("/conversations/{conversation_id}")
-async def get_conversation(conversation_id: int):
-    """
-    Obtiene una conversación específica.
-    """
-    try:
-        conversation = {
-            "id": conversation_id,
-            "title": f"Conversación {conversation_id}",
-            "messages": [],
-            "created_at": datetime.now().isoformat(),
-            "updated_at": datetime.now().isoformat()
-        }
-        return conversation
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        words = response_text.split()
 
-@router.delete("/conversations/{conversation_id}")
-async def delete_conversation(conversation_id: int):
-    """
-    Elimina una conversación.
-    """
-    try:
-        return {"message": f"Conversación {conversation_id} eliminada"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        for word in words:
+            yield f"data: {json.dumps({'token': word + ' '})}\n\n"
+            await asyncio.sleep(0.03)
 
-@router.get("/agent/status")
-async def get_agent_status():
-    """
-    Obtiene estado simulado del agente.
-    Sin acceso a Ollama ni SQLite.
-    """
-    return {
-        "name": "Aether",
-        "status": "ready",
-        "model": "gemma4:12b",
-        "version": "1.0",
-        "uptime_seconds": 3600,
-        "request_count": 42,
-        "last_message": "Esperando comandos...",
-        "backend_version": "1.0.0"
-    }
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        stream_response(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        },
+    )
