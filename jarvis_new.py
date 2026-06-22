@@ -47,14 +47,16 @@ def main():
     """Punto de entrada principal del sistema Aether."""
     inicializar_db()
     mem = cargar_memoria()
-
+    
     print("\n🤖 [SISTEMA] Secuencia de inicio completada.")
     print(f"   📦 Flatpaks en memoria: {len(mem['flatpaks'])}")
     print(f"   💬 Turnos conversacionales recordados: {len(mem['conversacion'])}")
 
     modo   = "ACTIVO (ejecución autónoma)" if MODO_AUTONOMO else "MANUAL (requiere confirmación)"
     nombre = mem["preferencias"].get("nombre_usuario")
-    print(f"🎙️  Javier: Buenos días, {nombre}. Matrices listas. Modo Autónomo: {modo}.\n")
+    print(f"🎙️  Aether: Buenos días, {nombre}. Matrices listas. Modo Autónomo: {modo}.\n")
+
+    agent = construir_agente(mem)
 
     while True:
         try:

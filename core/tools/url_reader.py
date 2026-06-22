@@ -57,7 +57,7 @@ def _desempaquetar_ddg(url: str) -> str:
 def leer_url(url: str) -> str:
     """Accede a una URL y extrae el texto principal del artículo o página."""
     url = _desempaquetar_ddg(url)
-    print(f"\n📖 [Javier NAVEGANDO]: {url}")
+    print(f"\n📖 [Aether NAVEGANDO]: {url}")
     try:
         r = requests.get(url, headers=_HEADERS_WEB, timeout=12)
         if r.status_code == 200:

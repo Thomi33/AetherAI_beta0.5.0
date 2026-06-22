@@ -23,7 +23,7 @@ _PATRONES_PELIGROSOS = [
 _LANZADORES_GUI = re.compile(
     r"\b(flatpak\s+run|steam|lutris|heroic|bottles|gamescope"
     r"|nvtop|btop|htop|glxgears|obs|kdenlive|gimp|inkscape"
-    r"|brave|electron|appimage"
+    r"|brave|electron|appimage|prismlauncher"
     r"|python\s+-m\s+|python3?\s+\S+\.py"
     r"|\./"
     r")",

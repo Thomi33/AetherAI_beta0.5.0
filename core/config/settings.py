@@ -19,6 +19,22 @@ MODELO_LITELLM  = f"ollama/{MODELO}"
 TIMEOUT_CMD     = 60
 BASE_JAVIER     = Path("/mnt/basurero/Javier")
 
+# ─────────────────────────────────────────────────────────────────────
+# 👁️  MODELO DE VISIÓN
+# Debe ser un modelo multimodal instalado en Ollama.
+# qwen3.5:9b es texto puro y NO soporta imágenes.
+#
+# Opciones comunes (instalar con: ollama pull <nombre>):
+#   "llava:7b"        ← más común, buena calidad
+#   "llava-phi3"      ← más rápido, menos RAM
+#   "moondream"       ← muy ligero (~1.7GB)
+#   "minicpm-v"       ← buena relación calidad/peso
+#   "qwen2.5vl:7b"   ← si querés mantenerte en la familia Qwen
+#
+# Verificá los que tenés con: ollama list
+# ─────────────────────────────────────────────────────────────────────
+MODELO_VISION   =  "qwen3-vl:8b"  # ← CAMBIÁ según lo que tengas instalado
+
 RUTA_DB          = BASE_JAVIER / "db"          / "memoria.db"
 RUTA_LOGS        = BASE_JAVIER / "logs"
 RUTA_SCREENSHOTS = BASE_JAVIER / "screenshots"

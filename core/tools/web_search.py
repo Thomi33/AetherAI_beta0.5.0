@@ -33,7 +33,7 @@ def _desempaquetar_ddg(url: str) -> str:
 @tool("Buscar en la Web con SearXNG")
 def buscar_web(query: str) -> str:
     """Busca en internet y devuelve títulos, URLs y resúmenes de los resultados."""
-    print(f"\n🔍 [Javier BUSCANDO]: '{query}'...")
+    print(f"\n🔍 [Aether BUSCANDO]: '{query}'...")
     
     # Intentar con SearXNG
     try:

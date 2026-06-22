@@ -47,7 +47,7 @@ def intentar_lanzar_flatpak(mem: dict, salida_lista: str, orden: str) -> None:
         app_id, nombre = partes[0].strip(), partes[1].strip()
         segmento = app_id.lower().split(".")[-1]
         if nombre.lower() in orden_lower or segmento in orden_lower:
-            print(f"\n🚀 [Javier]: ID encontrado → {app_id}. Lanzando ahora...")
+            print(f"\n🚀 [Aether]: ID encontrado → {app_id}. Lanzando ahora...")
             salida, _ = ejecutar_comando(f"flatpak run {app_id}")
             print(salida)
             return
