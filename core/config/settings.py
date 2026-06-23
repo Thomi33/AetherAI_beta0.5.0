@@ -14,7 +14,7 @@ from pathlib import Path
 MODO_AUTONOMO   = True
 OLLAMA_HOST     = "http://localhost:11434"
 SEARXNG_URL     = "http://localhost:8081"
-MODELO          = "qwen3.5:9b"
+MODELO          = "qwen2.5:14b" # ← modelo base para tareas de texto puro y tool calling (chat, análisis, etc.)
 MODELO_LITELLM  = f"ollama/{MODELO}"
 TIMEOUT_CMD     = 60
 BASE_JAVIER     = Path("/mnt/basurero/Javier")
@@ -33,7 +33,30 @@ BASE_JAVIER     = Path("/mnt/basurero/Javier")
 #
 # Verificá los que tenés con: ollama list
 # ─────────────────────────────────────────────────────────────────────
-MODELO_VISION   =  "qwen3-vl:8b"  # ← CAMBIÁ según lo que tengas instalado
+MODELO_VISION   =  "minicpm-v:8b"  # ← CAMBIÁ según lo que tengas instalado
+
+"""
+PARCHE para core/config/settings.py
+
+Agregar estas líneas DEBAJO de la sección "⚙️ CONFIGURACIÓN BASE"
+(después de la línea MODELO_VISION = "minicpm-v:8b").
+"""
+
+# ─────────────────────────────────────────────────────────────────────
+# 🔧 ORQUESTACIÓN: LangGraph (reemplaza CrewAI)
+# ─────────────────────────────────────────────────────────────────────
+# CONFIRMADO: qwen3.5:9b soporta tool calling nativo en Ollama
+# (devuelve tool_calls estructurados — ver test del 22/06/2026).
+# También es un modelo "thinking": separa razonamiento (`thinking`)
+# de la respuesta final y de los tool_calls. El grafo usa ChatOllama
+# (no la capa de compatibilidad OpenAI) para manejar esto correctamente.
+#
+# TOOL_CALLING_NATIVO = True  → el modelo decide function-calling
+#                               de forma estructurada (JSON), sin
+#                               parsear texto "Action:".
+# TOOL_CALLING_NATIVO = False → modo legacy (_web_directo() de antes),
+#                               por si necesitás revertir rápido.
+TOOL_CALLING_NATIVO = True
 
 RUTA_DB          = BASE_JAVIER / "db"          / "memoria.db"
 RUTA_LOGS        = BASE_JAVIER / "logs"
@@ -94,3 +117,30 @@ logging.getLogger("opentelemetry").setLevel(logging.CRITICAL)
 logging.getLogger("httpx").setLevel(logging.ERROR)
 logging.getLogger("litellm").setLevel(logging.ERROR)
 logging.getLogger("root").setLevel(logging.ERROR)
+
+
+# =====================================================================
+# 🗣️ PALABRAS CLAVE DE INTENCIÓN
+# =====================================================================
+
+PALABRAS_CLAVE_ESCRITURA: set[str] = {
+    "escribe", "crea", "genera", "redacta", "escribeme", "escríbeme",
+    "archivo", "fichero", "guarda", "nota", "crea un archivo",
+}
+
+PALABRAS_CLAVE_VISION: list[str] = [
+    "qué ves", "que ves", "describe", "mira", "captura", "pantalla",
+    "screenshot", "imagen", "foto", "observa", "analiza la pantalla",
+]
+
+PALABRAS_CLAVE_LANZAR: set[str] = {
+    "abre", "lanza", "inicia", "ejecuta", "arranca", "corre", "run",
+    "start", "open", "abrir", "lanzar", "iniciar",
+}
+
+PALABRAS_CLAVE_WEB: list[str] = [
+    "busca", "buscar", "search", "qué es", "que es", "quién es",
+    "quien es", "cuánto", "cuanto", "precio", "noticia", "noticias",
+    "clima", "tiempo en", "cómo se", "como se", "últimas", "ultimas",
+    "wikipedia", "define", "explica qué", "explica que",
+]

@@ -56,10 +56,18 @@ def ver_pantalla(pregunta: str = "¿Qué ves en esta pantalla?") -> str:
         with open(screenshot, "rb") as f:
             imagen_b64 = base64.b64encode(f.read()).decode("utf-8")
 
-        # Enviar al modelo de visión
+        # Enviar al modelo de visión con inyección de contexto para mitigar la resistencia/alineamiento de LLaVA
+        prompt_ajustado = (
+            "Eres un asistente técnico experto en análisis de interfaces de usuario. "
+            "La siguiente imagen es una captura de pantalla del escritorio del sistema operativo del usuario. "
+            "No contiene personas reales ni datos personales de nadie. Describe de forma objetiva, técnica y detallada "
+            "las ventanas, el texto, código, barras de estado o aplicaciones que se encuentran visibles.\n\n"
+            f"Pregunta del usuario: {pregunta}"
+        )
+
         payload = {
             "model":  MODELO_VISION,   # ← modelo multimodal, NO el de texto
-            "prompt": pregunta,
+            "prompt": prompt_ajustado, # ← prompt modificado
             "images": [imagen_b64],
             "stream": False,
             "options": {"temperature": 0.1, "num_ctx": 8192},

@@ -42,7 +42,19 @@ from core.parser.response_parser import analizar_salida
 from core.agent.builder import construir_agente
 from core.agent.executor import crear_tarea, ejecutar_crew, _get_llm_fallback
 from core.agent.prompts import construir_backstory
+from core.agent.error_handler import (
+    ejecutar_con_recuperacion,
+    confirmar_autofix,
+    MAX_INTENTOS_DEFAULT,
+)
 from core.memory.context_builder import construir_contexto_memoria
+
+from core.utils.intent_utils import (
+    contiene_escritura,
+    contiene_vision,
+    contiene_lanzar,
+    necesita_web,
+)
 
 
 def _stream_directo(orden: str, mem: dict, on_token=None) -> str:
@@ -122,23 +134,25 @@ _STOP_WORDS_LANZAR = frozenset([
 ])
 
 
-def _contiene_escritura(orden: str) -> bool:
+def contiene_escritura(orden: str) -> bool:
     return bool(set(orden.lower().split()) & PALABRAS_CLAVE_ESCRITURA)
 
 
-def _contiene_vision(orden: str) -> bool:
+def contiene_vision(orden: str) -> bool:
     # Web tiene prioridad absoluta:
     # "busca las especificaciones de la pantalla..." → web, NO visión
-    if _necesita_web(orden):
+    if necesita_web(orden):
         return False
     return any(x in orden.lower() for x in PALABRAS_CLAVE_VISION)
 
 
-def _contiene_lanzar(orden: str) -> bool:
-    return any(x in orden.lower() for x in PALABRAS_CLAVE_LANZAR)
+def contiene_lanzar(orden: str) -> bool:
+    # Al usar intersección de sets, "corre" solo se activará si es una palabra suelta,
+    # ignorando palabras compuestas como "corregirlo" o "correo".
+    return bool(set(orden.lower().split()) & PALABRAS_CLAVE_LANZAR)
 
 
-def _necesita_web(orden: str) -> bool:
+def necesita_web(orden: str) -> bool:
     """
     Detecta si la orden requiere búsqueda web.
     Activa con_tools=True en el agente cuando retorna True.
@@ -334,7 +348,7 @@ def procesar_orden_completo(orden: str, mem: dict, modo_autonomo: bool = True) -
             registrar_turno(mem, "jarvis", f"Lanzado {app_id} directamente.")
             return f"Lanzado {app_id}"
 
-        # 3c: [NUEVO] Ejecutable nativo en PATH del sistema (sin LLM)
+        # 3c: Ejecutable nativo en PATH del sistema (sin LLM)
         print("\n🔍 [BÚSQUEDA RÁPIDA]: Buscando ejecutable en PATH...")
         cmd_path = _lanzar_programa_rapido(orden)
         if cmd_path:
@@ -347,6 +361,35 @@ def procesar_orden_completo(orden: str, mem: dict, modo_autonomo: bool = True) -
             registrar_comando(mem, orden, cmd_path)
             registrar_turno(mem, "jarvis", f"Lanzado {cmd_path} directamente.")
             return f"Lanzado {cmd_path}"
+
+        # 3d: [NUEVO] AUTO-FIX — no se encontró en flatpaks ni en PATH.
+        # Antes de rendirse, le preguntamos UNA VEZ al usuario si puede
+        # buscar el nombre/paquete correcto por su cuenta (typos, nombres
+        # de paquete distintos al binario, etc.)
+        print("\n⚠️  [SISTEMA]: No encontré el programa en flatpaks ni en PATH.")
+        if confirmar_autofix(f"lanzar el programa solicitado en: '{orden}'"):
+            salida, exito, comando_final = ejecutar_con_recuperacion(
+                comando_inicial=f"command -v {orden.split()[-1]}",
+                contexto=(
+                    f"El usuario pidió lanzar un programa con la orden: '{orden}'. "
+                    "El nombre exacto del binario o paquete puede ser distinto al "
+                    "que usó el usuario (typo, alias, nombre de paquete vs binario). "
+                    "Buscá el nombre correcto del comando/paquete a instalar o ejecutar "
+                    "en Arch Linux (pacman/yay/flatpak) y devolvé el comando final que "
+                    "lo lanza, ej: 'nombre_correcto &' o 'flatpak run id.correcto &'."
+                ),
+                max_intentos=MAX_INTENTOS_DEFAULT,
+                autorizado=True,
+            )
+            if exito:
+                print(f"   ✅ Resuelto. Comando final: {comando_final}")
+                registrar_comando(mem, orden, comando_final)
+                registrar_turno(mem, "jarvis", f"Lanzado vía auto-fix: {comando_final}")
+                return f"Lanzado (auto-fix): {comando_final}"
+            else:
+                print(f"   ❌ [AUTO-FIX]: No se pudo resolver. Último error: {salida}")
+                registrar_turno(mem, "jarvis", f"Auto-fix falló al lanzar: {orden}")
+                # Cae al flujo normal por si el LLM con contexto completo logra algo
 
     # ─────────────────────────────────────────
     # FLUJO NORMAL: Procesar con agente
@@ -397,6 +440,20 @@ def procesar_orden_completo(orden: str, mem: dict, modo_autonomo: bool = True) -
         if ejecutar:
             print("\n⚙️  [EJECUTANDO EN ZSH...]")
             salida, hubo_error = ejecutar_comando(comando)
+
+            # [NUEVO] AUTO-FIX: si falla, confirmación única y luego
+            # reintento autónomo diagnosticando el error en la web.
+            if hubo_error:
+                print(f"\n⚠️  [ERROR DETECTADO]:\n{salida[:300]}")
+                if confirmar_autofix(f"ejecutar: {comando}"):
+                    salida, exito_fix, comando = ejecutar_con_recuperacion(
+                        comando_inicial=comando,
+                        contexto=f"Orden original del usuario: '{orden}'",
+                        max_intentos=MAX_INTENTOS_DEFAULT,
+                        autorizado=True,
+                    )
+                    hubo_error = not exito_fix
+
             print(f"\n{'─'*50}")
             print(salida)
             print(f"{'─'*50}")
@@ -423,6 +480,42 @@ def procesar_orden_completo(orden: str, mem: dict, modo_autonomo: bool = True) -
         if ok:
             print(f"\n⚙️  [SISTEMA]: Archivo '{nombre_arch}' guardado.")
             print(f"\n🎙️  Aether: Informe plasmado en '{nombre_arch}'.")
+
+            # [NUEVO] Si es código ejecutable y el usuario pidió probarlo,
+            # corremos con auto-fix: confirmación única, luego reintentos
+            # autónomos diagnosticando tracebacks/errores en la web.
+            _quiere_probar = any(
+                p in orden.lower() for p in ("prueba", "probar", "ejecuta", "corre", "testea")
+            )
+            if _quiere_probar and nombre_arch.endswith((".py", ".sh")):
+                cmd_prueba = (
+                    f"python3 {nombre_arch}" if nombre_arch.endswith(".py")
+                    else f"bash {nombre_arch}"
+                )
+                print(f"\n🧪 [SISTEMA]: Probando '{nombre_arch}'...")
+                salida_prueba, hubo_error = ejecutar_comando(cmd_prueba)
+
+                if hubo_error:
+                    print(f"\n⚠️  [ERROR AL PROBAR]:\n{salida_prueba[:300]}")
+                    if confirmar_autofix(f"corregir y volver a probar '{nombre_arch}'"):
+                        salida_prueba, exito_fix, _ = ejecutar_con_recuperacion(
+                            comando_inicial=cmd_prueba,
+                            contexto=(
+                                f"Código generado en '{nombre_arch}' para la orden: "
+                                f"'{orden}'. El error es del script, no del comando "
+                                "que lo invoca — el fix debe reescribir el contenido "
+                                f"de {nombre_arch} y luego volver a ejecutarlo con "
+                                f"'{cmd_prueba}'."
+                            ),
+                            max_intentos=MAX_INTENTOS_DEFAULT,
+                            autorizado=True,
+                        )
+                        if exito_fix:
+                            print(f"   ✅ '{nombre_arch}' corregido y ejecutado con éxito.")
+                        else:
+                            print(f"   ❌ No se pudo corregir automáticamente: {salida_prueba[:200]}")
+                else:
+                    print(f"   ✅ Prueba exitosa:\n{salida_prueba[:300]}")
         else:
             print(f"\n❌ [SISTEMA]: No pude escribir el archivo '{nombre_arch}'.")
         registrar_turno(mem, "jarvis", respuesta)
