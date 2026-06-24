@@ -1,0 +1,35 @@
+"""
+graph_service: entrada única al motor LangGraph de Aether.
+
+Este módulo es deliberadamente delgado y SIN dependencias de CrewAI, de modo
+que el CLI/servicio puedan usar el grafo como motor único sin arrastrar el
+código legado de core/services/aether_service.py (basado en CrewAI).
+
+Función principal:
+    procesar_orden_grafo(orden, mem, modo_autonomo) -> str
+"""
+
+from core.memory.memory_manager import registrar_turno
+
+
+def procesar_orden_grafo(orden: str, mem: dict, modo_autonomo: bool = True) -> str:
+    """
+    Procesa una orden invocando el grafo de Aether
+    (planner → plan_executor → [error handler] → synthesizer → finalize).
+
+    - Normaliza la memoria y construye el estado con la factory central.
+    - Registra el turno del usuario aquí; node_finalize registra el de Aether
+      (evita doble registro en la tabla conversaciones).
+    - Retorna la respuesta final del grafo.
+    """
+    # Imports locales para evitar import circular y costos de import en frío.
+    from core.agent.graph_builder import get_graph
+    from core.agent.graph_state import crear_estado_inicial
+
+    registrar_turno(mem, "usuario", orden)
+
+    grafo = get_graph()
+    estado = crear_estado_inicial(orden, mem, modo_autonomo)
+    resultado = grafo.invoke(estado)
+
+    return resultado.get("final_response") or "Operación completada."

@@ -286,9 +286,17 @@ def _web_directo(orden: str) -> str:
 # ─────────────────────────────────────────────
 # API PÚBLICA
 # ─────────────────────────────────────────────
+# NOTA: El motor activo de Aether es LangGraph. La entrada recomendada es
+# core.services.graph_service.procesar_orden_grafo(). Las funciones de este
+# módulo (basadas en CrewAI) quedan DEPRECADAS y se conservan solo por
+# referencia/reversión.
+
 def _procesar_orden(orden: str, mem: dict) -> str:
     """
-    Función principal — mantiene compatibilidad total con la API existente.
+    [DEPRECADO] Flujo basado en CrewAI.
+
+    El motor activo es core.services.graph_service.procesar_orden_grafo()
+    (LangGraph). No usar en código nuevo.
     """
     con_tools = _necesita_web(orden)
     agente = construir_agente(mem, con_tools=con_tools)

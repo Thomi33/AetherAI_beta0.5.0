@@ -131,9 +131,13 @@ def _buscar_flatpak_rapido(orden: str) -> str | None:
     if not palabras:
         return None
     for termino in reversed(palabras):
+        # FIX #7: sanitizar contra shell injection en grep
+        termino_safe = re.sub(r"[^\w\-\.]", "", termino)
+        if not termino_safe:
+            continue
         cmd = (
             f"flatpak list --app --columns=application,name 2>/dev/null "
-            f"| grep -i '{termino}' | head -1"
+            f"| grep -i '{termino_safe}' | head -1"
         )
         salida, hubo_error = ejecutar_comando(cmd)
         if salida and not hubo_error:
@@ -149,9 +153,14 @@ def _lanzar_programa_rapido(orden: str) -> str | None:
     if not palabras:
         return None
     for termino in reversed(palabras):
-        salida, hubo_error = ejecutar_comando(f"command -v '{termino}' 2>/dev/null")
+        # FIX #7: sanitizar contra shell injection — solo caracteres alfanuméricos,
+        # guión y punto. Un término como "app'; rm -rf ~" queda como "app-rf".
+        termino_safe = re.sub(r"[^\w\-\.]", "", termino)
+        if not termino_safe:
+            continue
+        salida, hubo_error = ejecutar_comando(f"command -v '{termino_safe}' 2>/dev/null")
         if not hubo_error and salida.strip():
-            return termino
+            return termino_safe
     return None
 
 
@@ -215,11 +224,7 @@ def _procesar_comando_memoria(orden: str, mem: dict) -> bool:
 
     return False
 
-from core.agent.graph_state import (
-    AetherState,
-    MAX_INTENTOS_POR_CONTEXTO,
-    MAX_INTENTOS_DEFAULT,
-)
+# FIX #8: importación duplicada eliminada — ya importado en línea 53
 
 # ══════════════════════════════════════════════════════════════════════
 # EXTRACTOR DE COMANDOS SHELL (mejorado, sin crash con markdown)
@@ -230,7 +235,17 @@ def extraer_comando_shell_seguro(texto: str) -> str | None:
     Extrae comandos ejecutables del texto del LLM.
     Prioridad: [SHELL]...[/SHELL] > ```bash/sh/zsh > ReAct Action:
     Filtra falsos positivos de bloques descriptivos de Markdown.
+
+    FIX #1: Los nombres de tools internas (buscar_web, leer_url, etc.) ya NO
+    se tratan como comandos de shell — antes se ejecutaban en zsh y fallaban
+    con "command not found", activando el error handler innecesariamente.
     """
+    # Tools internas del agente — NO son binarios de sistema
+    _TOOLS_INTERNAS = frozenset({
+        "buscar_web", "search_web", "leer_url", "read_url",
+        "ver_pantalla", "none",
+    })
+
     if not texto:
         return None
 
@@ -245,6 +260,9 @@ def extraer_comando_shell_seguro(texto: str) -> str | None:
     for m in re.finditer(r"Action:\s*([\w-]+)\s*\nAction Input:\s*(.*)", texto, re.IGNORECASE):
         cmd  = m.group(1).strip()
         args = m.group(2).strip().split("\n")[0].strip()
+        # FIX #1: ignorar tools internas — no son comandos zsh
+        if cmd.lower() in _TOOLS_INTERNAS:
+            continue
         if cmd.lower() != "none" and args.lower() != "none":
             matches.append((m.start(), f"{cmd} {args}"))
 
@@ -327,12 +345,17 @@ def _buscar_en_web_fix(error_msg: str, contexto: str = "shell") -> tuple[str, st
     Busca el error en web y lee la primera URL relevante.
     Retorna (contexto_web_completo, url_fuente).
     """
+    # FIX #6: usar solo la primera línea real del error para el query.
+    # Antes se usaba el error_msg completo, que podía incluir texto del LLM
+    # (ej: "accidente aéreo 2023") y contaminaba la búsqueda web.
+    primera_linea = (error_msg.strip().splitlines() or [""])[0][:150]
+
     if contexto == "codigo":
-        query = f"python error {error_msg[:150]} solution fix"
+        query = f"python error {primera_linea} solution fix"
     elif contexto == "launch":
-        query = f"linux launch application not found {error_msg[:120]} alternative"
+        query = f"linux launch application not found {primera_linea[:120]} alternative"
     else:
-        query = f"{error_msg[:180]} linux zsh fix"
+        query = f"{primera_linea} linux zsh fix"
 
     print(f"\n🔍 [ERROR HANDLER]: Consultando web: '{query[:70]}...'")
     web_raw = buscar_web.invoke({"query": query})
@@ -612,6 +635,8 @@ def _web_con_tool_calling(orden: str, mem: dict) -> str:
     TOOLS_MAP      = {"buscar_web": buscar_web, "leer_url": leer_url}
     queries_vistas: set[tuple] = set()
 
+    respuesta_valida = None
+
     for ronda in range(3):
         ai_msg = llm.invoke(mensajes)
         mensajes.append(ai_msg)
@@ -621,9 +646,43 @@ def _web_con_tool_calling(orden: str, mem: dict) -> str:
             print(f"\n🧠 [THINKING ronda {ronda}]: {thinking[:400]}...")
 
         if not ai_msg.tool_calls:
-            return ai_msg.content
+            # FIX #4: solo retornar si la respuesta tiene contenido sustancial.
+            contenido = (ai_msg.content or "").strip()
+
+            # FIX C: el modelo a veces alucina tool calls como texto plano
+            # (XML <tool_call>, JSON con toolbench_rapidapi_key, etc.)
+            # Si el contenido parece un tool call textual, ignorarlo y continuar.
+            _es_tool_call_textual = (
+                "toolbench_rapidapi_key" in contenido
+                or "<tool_call>" in contenido
+                or ('"arguments"' in contenido and '"name"' in contenido)
+                or contenido.startswith('{"name":')
+            )
+            if _es_tool_call_textual:
+                print(f"\n⚠️  [TOOL CALL TEXTUAL IGNORADO — ronda {ronda}]")
+                respuesta_valida = None  # no usarla como fallback
+                continue
+
+            if len(contenido) > 30:
+                return contenido
+            respuesta_valida = contenido
+            continue
 
         for tc in ai_msg.tool_calls:
+            # FIX B: validar que los args requeridos estén presentes antes de invocar.
+            # El modelo a veces alucina args inválidos (ej: toolbench_rapidapi_key)
+            # que hacen explotar Pydantic. Los bloqueamos acá con un mensaje de sistema
+            # para que el modelo corrija en la siguiente ronda.
+            _ARGS_REQUERIDOS = {"buscar_web": "query", "leer_url": "url"}
+            arg_req = _ARGS_REQUERIDOS.get(tc["name"])
+            if arg_req and arg_req not in tc["args"]:
+                print(f"\n⚠️  [TOOL CALL INVÁLIDO — falta '{arg_req}']: {tc['name']}({tc['args']})")
+                mensajes.append(ToolMessage(
+                    content=f"[SISTEMA]: llamada inválida a {tc['name']} — falta el argumento '{arg_req}'. Reintenta con el argumento correcto.",
+                    tool_call_id=tc["id"],
+                ))
+                continue
+
             firma   = (tc["name"], tuple(sorted(tc["args"].items())))
             tool_fn = TOOLS_MAP.get(tc["name"])
 
@@ -640,12 +699,20 @@ def _web_con_tool_calling(orden: str, mem: dict) -> str:
 
             mensajes.append(ToolMessage(content=str(resultado), tool_call_id=tc["id"]))
 
-    final = _get_llm_ollama().invoke(mensajes)
-    return final.content
+    # FIX #4: si el loop terminó sin retornar (3 rondas con tool_calls o
+    # respuestas muy cortas), forzar síntesis final. Si hay respuesta_valida
+    # (corta pero existente) usarla solo si el LLM falla.
+    try:
+        final = _get_llm_ollama().invoke(mensajes)
+        contenido_final = (final.content or "").strip()
+        return contenido_final if contenido_final else (respuesta_valida or "No se encontró información relevante.")
+    except Exception:
+        return respuesta_valida or "No se encontró información relevante."
 
 
 def _web_directo_legacy(orden: str) -> str:
-    resultados = buscar_web(orden)
+    # FIX A: buscar_web es StructuredTool — no es callable directo, requiere .invoke()
+    resultados = buscar_web.invoke({"query": orden})
     llm        = _get_llm()
     prompt = (
         f"El usuario pregunta: {orden}\n\n"
@@ -726,10 +793,15 @@ def _despues_de_general(state: AetherState) -> Literal["shell", "escribir", "fin
     orden_lower = state["orden"].lower()
     quiere_escribir = any(p in orden_lower for p in palabras_escritura)
 
+    # FIX #2: si el LLM generó un [SHELL] explícito en la respuesta, tiene
+    # prioridad sobre la detección de escritura por keywords en la orden.
+    # Antes, una orden como "crea un script y ejecútalo" iba a "escribir"
+    # aunque el LLM hubiera generado [SHELL]...[/SHELL] — ese comando se perdía.
+    hay_shell_explicito = bool(state.get("comando_shell"))
+    if hay_shell_explicito:
+        return "shell"
     if quiere_escribir or _contiene_escritura(state["orden"]):
         return "escribir"
-    if state.get("comando_shell"):
-        return "shell"
     return "fin"
 
 
@@ -807,8 +879,9 @@ def nodo_analizar_shell(state: AetherState) -> AetherState:
 
     print(f"\n🎙️  Aether: {analisis}")
     registrar_turno(mem, "jarvis", analisis)
-    state["respuesta"] = analisis
-    state["terminado"] = True
+    state["respuesta"]  = analisis
+    state["ya_impreso"] = True   # FIX #3: nodo_fin no duplicará print ni registro
+    state["terminado"]  = True
     return state
 
 
@@ -827,7 +900,12 @@ def nodo_escribir_archivo(state: AetherState) -> AetherState:
     contenido_limpio = bloques[0].strip() if bloques else respuesta.strip()
 
     # ── Detectar ruta original mencionada en la orden ────────────────
-    m_ruta = re.search(r"(/[\w/\-\.]+\.(?:py|sh|txt|md|json))", orden)
+    # FIX #5: extensiones ampliadas — antes .yaml, .toml, .env, .js, .ts, etc.
+    # no eran capturadas y el archivo se guardaba con nombre incorrecto.
+    m_ruta = re.search(
+        r"(/[\w/\-\.]+\.(?:py|sh|txt|md|json|yaml|yml|toml|env|js|ts|csv|ini|cfg|rs|go|c|cpp|h))",
+        orden
+    )
     ruta_original = m_ruta.group(1) if m_ruta else None
 
     if ruta_original:
@@ -1124,6 +1202,7 @@ def nodo_error_retry(state: AetherState) -> AetherState:
     respuesta_final = salida or "Operación completada tras corrección automática."
     registrar_turno(mem, "jarvis", respuesta_final)
     state["respuesta"]      = respuesta_final
+    state["ya_impreso"]     = True   # FIX #3: nodo_fin no duplicará registro
     state["terminado"]      = True
     state["error_contexto"] = ""   # limpiar
     return state
@@ -1257,9 +1336,16 @@ def nodo_fin(state: AetherState) -> AetherState:
     mem       = state["mem"]
     respuesta = state.get("respuesta")
 
-    if respuesta and not state.get("tokens"):
+    # FIX #3 + #9: evitar doble print y doble registro en DB.
+    # - "tokens" lo setea nodo_general (streaming token a token, ya imprimió).
+    # - "ya_impreso" lo setean nodos que imprimen Y registran ellos mismos
+    #   antes de llegar aquí (nodo_analizar_shell, nodo_error_retry, etc.).
+    # Cualquier nodo nuevo que agregues: si imprime y registra solo,
+    # setea state["ya_impreso"] = True antes de retornar.
+    ya_impreso = state.get("ya_impreso", False)
+    if respuesta and not state.get("tokens") and not ya_impreso:
         print(f"\n🎙️  Aether: {respuesta}")
-    if respuesta:
+    if respuesta and not ya_impreso:
         registrar_turno(mem, "jarvis", respuesta)
 
     state["terminado"] = True
@@ -1394,6 +1480,7 @@ def procesar_orden_completo(orden: str, mem: dict, modo_autonomo: bool = True) -
         "error_fix_propuesto":   "",
         "error_fix_diff":        "",
         "error_fix_fuente":      "",
+        "ya_impreso":            False,   # FIX #3: flag para nodo_fin
     }
     estado_final = grafo.invoke(estado_inicial)
     return estado_final.get("respuesta")

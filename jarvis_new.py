@@ -1,17 +1,15 @@
 """
-Aether (Javier) - Wrapper de compatibilidad para la arquitectura refactorizada.
+Aether (Javier) - Punto de entrada principal.
 
-CAMBIO: orquestación migrada de CrewAI a LangGraph.
-La única línea que cambia respecto al jarvis_new.py original es el import
-de procesar_orden_completo: ahora viene de core.agent.graph en vez de
-core.services.aether_service.
-
-Todo lo demás (memoria, herramientas, parsing) se mantiene 100% igual,
-porque esa lógica vive en módulos que el grafo reutiliza directamente.
+CAMBIO vs versión anterior:
+- orquestación migrada de CrewAI → LangGraph (graph_builder / graph_nodes)
+- procesar_orden_completo() definido aquí: registra turno usuario,
+  invoca el grafo y retorna la respuesta final
+- get_grafo() renombrado a get_graph() (era inconsistente con graph_builder.py)
 """
-import time
+import traceback
 
-from core.config.settings import *
+from core.config.settings import MODO_AUTONOMO, MODELO
 
 from core.memory.memory_manager import (
     inicializar_db,
@@ -35,10 +33,21 @@ from core.tools.vision import ver_pantalla
 from core.parser.shell_parser import extraer_comando_shell
 from core.parser.response_parser import analizar_salida
 
-# ── CAMBIO CLAVE ──────────────────────────────────────────────
-from core.agent.graph import procesar_orden_completo, get_grafo
-# ────────────────────────────────────────────────────────────────
-import traceback  # <-- solo esto aquí arriba, el except va ABAJO
+# ── CAMBIO CLAVE: grafo LangGraph en vez de CrewAI ───────────────────
+from core.agent.graph_builder import get_graph
+from core.services.graph_service import procesar_orden_grafo
+
+
+def procesar_orden_completo(orden: str, mem: dict, modo_autonomo: bool = True) -> str:
+    """
+    Procesa la orden a través del motor LangGraph.
+
+    Delega en core.services.graph_service.procesar_orden_grafo() para mantener
+    una única implementación del motor (registra el turno del usuario e invoca
+    el grafo; node_finalize registra el turno de Aether).
+    """
+    return procesar_orden_grafo(orden, mem, modo_autonomo)
+
 
 def main():
     """Punto de entrada principal del sistema Aether."""
@@ -50,10 +59,11 @@ def main():
     print(f"   💬 Turnos conversacionales recordados: {len(mem['conversacion'])}")
 
     modo   = "ACTIVO (ejecución autónoma)" if MODO_AUTONOMO else "MANUAL (requiere confirmación)"
-    nombre = mem["preferencias"].get("nombre_usuario")
+    nombre = mem["preferencias"].get("nombre_usuario", "Creador")
     print(f"🎙️  Aether: Buenos días, {nombre}. Matrices listas (LangGraph). Modo Autónomo: {modo}.\n")
 
-    get_grafo()
+    # Precalentar el grafo en el inicio (evita delay en la primera orden)
+    get_graph()
 
     while True:
         try:
@@ -72,7 +82,7 @@ def main():
             break
         except Exception as e:
             print(f"\n❌ [ERROR CRÍTICO]: {e}")
-            traceback.print_exc()  # <-- aquí dentro del except
+            traceback.print_exc()
 
 
 if __name__ == "__main__":

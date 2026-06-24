@@ -1,6 +1,8 @@
 # 🤖 Aether - Agente Local Inteligente (CLI)
 
-Agente de IA basado en **CrewAI** + **Ollama** (Gemma 4:12B). Terminal-first, sin dependencias de web UI.
+Agente de IA basado en **LangGraph** + **Ollama** (Gemma 4:12B). Terminal-first, sin dependencias de web UI.
+
+> Motor unificado de **Tool Planning**: el `planner` es la única puerta de decisión y siempre produce un plan (1 paso o multi-tool). Ver `TOOL_PLANNING.md` y `PLANNING_QUICKSTART.md`.
 
 ## 📁 Estructura del Proyecto
 
@@ -73,13 +75,37 @@ Verás:
                │ Python import
                ↓
 ┌─────────────────────────────────────────────┐
-│   Agente (jarvis.py - CrewAI + Ollama)      │
+│   Agente (core/ - LangGraph + Ollama)       │
 │  - LocalLLM: Gemma 4:12B                    │
 │  - Memory: SQLite (conversaciones)          │
-│  - Tools: Sistema, búsqueda, etc.           │
+│  - Tools: Sistema, búsqueda, visión, etc.   │
+│  - 🆕 Tool Planning: Encadenamiento multi-tool │
 │  - Ejecución autónoma/manual                │
 └─────────────────────────────────────────────┘
 ```
+
+### 🆕 Sistema de Tool Planning
+
+Aether ahora puede encadenar múltiples herramientas automáticamente para resolver tareas complejas:
+
+**Ejemplo:**
+```
+🧠 Creador: Busca el precio de Bitcoin y guárdalo en precio.txt
+
+[El sistema automáticamente:]
+1. 🔍 Busca en web el precio de Bitcoin
+2. 💾 Crea archivo precio.txt con el resultado
+3. 🎙️  Responde: "He guardado el precio de Bitcoin ($50,000) en precio.txt"
+```
+
+**Características:**
+- ✅ Planificación inteligente con LLM
+- ✅ Ejecución secuencial de pasos
+- ✅ Contexto compartido entre herramientas
+- ✅ Fallback seguro a flujo simple
+- ✅ Compatible con todos los nodos existentes
+
+📚 **Docs completas:** Ver `TOOL_PLANNING.md` y `PLANNING_QUICKSTART.md`
 
 ## 📖 Uso
 

@@ -98,24 +98,18 @@ class AetherService:
                 }
         
         try:
-            # Importar módulos necesarios
-            from core.memory.memory_manager import registrar_turno
-            from core.services.aether_service import _procesar_orden
-            
+            # Importar el motor LangGraph (módulo limpio, sin CrewAI)
+            from core.services.graph_service import procesar_orden_grafo
+
             with _AETHER_LOCK:
                 logger.debug(f"Procesando mensaje: {user_message[:50]}...")
-                
-                # Registrar entrada del usuario
-                registrar_turno(_AETHER_MEMORY, "usuario", user_message)
-                
-                # Procesar la orden
-                respuesta = _procesar_orden(user_message, _AETHER_MEMORY)
-                
-                # Registrar respuesta del agente
-                registrar_turno(_AETHER_MEMORY, "jarvis", respuesta)
-                
-                logger.debug(f"Respuesta generada: {respuesta[:50]}...")
-            
+
+                # MOTOR ÚNICO: LangGraph. procesar_orden_grafo registra el turno
+                # del usuario y node_finalize el de Aether (sin doble registro).
+                respuesta = procesar_orden_grafo(user_message, _AETHER_MEMORY, modo_autonomo=True)
+
+                logger.debug(f"Respuesta generada: {str(respuesta)[:50]}...")
+
             return {
                 "response": respuesta,
                 "agent_status": "ready"

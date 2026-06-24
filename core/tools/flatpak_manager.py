@@ -25,7 +25,7 @@ def buscar_flatpak_en_memoria(mem: dict, orden: str) -> str | None:
     Retorna el app_id si lo encuentra, None en caso contrario.
     """
     orden_lower = orden.lower()
-    for nombre, app_id in mem["flatpaks"].items():
+    for nombre, app_id in (mem.get("flatpaks") or {}).items():
         if nombre in orden_lower or nombre.split()[-1] in orden_lower:
             return app_id
     return None

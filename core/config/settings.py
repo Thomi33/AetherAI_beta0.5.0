@@ -14,7 +14,7 @@ from pathlib import Path
 MODO_AUTONOMO   = True
 OLLAMA_HOST     = "http://localhost:11434"
 SEARXNG_URL     = "http://localhost:8081"
-MODELO          = "qwen2.5:14b" # ← modelo base para tareas de texto puro y tool calling (chat, análisis, etc.)
+MODELO          = "deepseek-r1:14b" # ← modelo base para tareas de texto puro y tool calling (chat, análisis, etc.)
 MODELO_LITELLM  = f"ollama/{MODELO}"
 TIMEOUT_CMD     = 60
 BASE_JAVIER     = Path("/mnt/basurero/Javier")
@@ -33,7 +33,7 @@ BASE_JAVIER     = Path("/mnt/basurero/Javier")
 #
 # Verificá los que tenés con: ollama list
 # ─────────────────────────────────────────────────────────────────────
-MODELO_VISION   =  "minicpm-v:8b"  # ← CAMBIÁ según lo que tengas instalado
+MODELO_VISION   =  "qwen3-vl:8b"  # ← CAMBIÁ según lo que tengas instalado
 
 """
 PARCHE para core/config/settings.py
@@ -67,6 +67,27 @@ RUTA_BACKUPS     = BASE_JAVIER / "backups"
 BASE_JAVIER.mkdir(parents=True, exist_ok=True)
 
 MAX_HISTORIAL = 100000
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 🧠 CONTEXTO CONVERSACIONAL (memoria inyectada en el prompt)
+# ─────────────────────────────────────────────────────────────────────
+# Ventana de contexto del modelo en Ollama. Subirla permite inyectar MÁS
+# turnos de conversación sin exceed_context_size_error, a costa de algo de
+# RAM/VRAM y latencia. 16384 ya se usa en el resto del proyecto
+# (builder/error_handler/graph), así que el equipo lo soporta.
+# Bajalo a 8192 si tu equipo va justo de memoria.
+NUM_CTX = 16384
+
+# Máximo de turnos de conversación a inyectar (RAM → prompt). Subido de 50
+# a 200. Se acota además por presupuesto de caracteres (abajo) para que un
+# pico de turnos largos nunca desborde NUM_CTX.
+MAX_TURNOS_CONTEXTO = 200
+
+# Presupuesto de caracteres del bloque de conversación. Se incluyen los
+# turnos MÁS RECIENTES hacia atrás hasta llegar a este tope (los más viejos
+# se descartan). ~4 chars/token → 16000 ≈ 4000 tokens, holgado en NUM_CTX.
+CONTEXTO_CONV_MAX_CHARS = 16000
 
 
 # =====================================================================

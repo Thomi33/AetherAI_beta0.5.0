@@ -22,6 +22,56 @@ def _memoria_vacia() -> dict:
     }
 
 
+def normalizar_mem(mem: dict | None) -> dict:
+    """
+    Garantiza que `mem` cumpla el esquema obligatorio de memoria de Aether.
+
+    Rellena de forma NO destructiva cualquier clave/sub-clave faltante con
+    los valores por defecto. Esto evita KeyError en nodos y en el
+    constructor de contexto cuando se recibe un `mem` parcial o vacío
+    (p.ej. en tests o integraciones externas).
+
+    Esquema garantizado:
+        preferencias: dict con nombre_usuario, navegador, notas (list)
+        flatpaks: dict
+        historial_comandos: list
+        conversacion: list
+
+    Muta y retorna el mismo dict para conveniencia. Si `mem` es None,
+    retorna una estructura vacía nueva.
+    """
+    base = _memoria_vacia()
+
+    if not isinstance(mem, dict):
+        return base
+
+    # ── preferencias (dict anidado) ──────────────────────────────────
+    prefs = mem.get("preferencias")
+    if not isinstance(prefs, dict):
+        prefs = {}
+    for clave, valor_def in base["preferencias"].items():
+        if clave not in prefs or prefs[clave] is None:
+            prefs[clave] = valor_def
+    # 'notas' debe ser siempre lista
+    if not isinstance(prefs.get("notas"), list):
+        prefs["notas"] = []
+    mem["preferencias"] = prefs
+
+    # ── flatpaks (dict) ──────────────────────────────────────────────
+    if not isinstance(mem.get("flatpaks"), dict):
+        mem["flatpaks"] = {}
+
+    # ── historial_comandos (list) ────────────────────────────────────
+    if not isinstance(mem.get("historial_comandos"), list):
+        mem["historial_comandos"] = []
+
+    # ── conversacion (list) ──────────────────────────────────────────
+    if not isinstance(mem.get("conversacion"), list):
+        mem["conversacion"] = []
+
+    return mem
+
+
 def cargar_memoria() -> dict:
     """
     Carga estado en memoria RAM desde DB + defaults.
@@ -63,7 +113,7 @@ def cargar_memoria() -> dict:
     except Exception:
         pass
     
-    return mem
+    return normalizar_mem(mem)
 
 
 def guardar_preferencias(mem: dict) -> None:
@@ -142,5 +192,32 @@ def obtener_ultimos_turnos(n: int = 20) -> list:
         ).fetchall()
         con.close()
         return list(reversed(filas))
+    except Exception:
+        return []
+
+# memory_manager.py — agregar esta función
+
+def obtener_recuerdos(
+    categoria: str | None = None,
+    importancia_min: int = 0,
+    limit: int = 20,
+) -> list[dict]:
+    """
+    Lee de la tabla 'recuerdos' con filtros. Reemplaza el SELECT
+    hardcodeado a categoria='preferencias' que ignoraba todo lo demás.
+    """
+    try:
+        con = get_db_connection()
+        sql = "SELECT categoria, contenido, importancia, fecha FROM recuerdos WHERE importancia >= ?"
+        params = [importancia_min]
+        if categoria:
+            sql += " AND categoria = ?"
+            params.append(categoria)
+        sql += " ORDER BY importancia DESC, id DESC LIMIT ?"
+        params.append(limit)
+
+        filas = con.execute(sql, params).fetchall()
+        con.close()
+        return [dict(f) for f in filas]
     except Exception:
         return []

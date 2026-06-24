@@ -66,13 +66,14 @@ def ver_pantalla(pregunta: str = "¿Qué ves en esta pantalla?") -> str:
         )
 
         payload = {
-            "model":  MODELO_VISION,   # ← modelo multimodal, NO el de texto
-            "prompt": prompt_ajustado, # ← prompt modificado
+            "model":  MODELO_VISION,
+            "prompt": prompt_ajustado,
             "images": [imagen_b64],
-            "stream": False,
+            "stream": False,   # ← antes era True
             "options": {"temperature": 0.1, "num_ctx": 8192},
-        }
-        r = requests.post(f"{OLLAMA_HOST}/api/generate", json=payload, timeout=60)
+                }
+    
+        r = requests.post(f"{OLLAMA_HOST}/api/generate", json=payload, timeout=120)
 
         if r.status_code == 200:
             data = r.json()
@@ -104,3 +105,4 @@ def ver_pantalla(pregunta: str = "¿Qué ves en esta pantalla?") -> str:
                 os.unlink(screenshot)
             except Exception:
                 pass
+
