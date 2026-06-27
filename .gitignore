@@ -65,3 +65,6 @@ build/
 *.bak
 *.bak2
 *.old
+crewai-env/
+__pycache__/
+*.pyc
