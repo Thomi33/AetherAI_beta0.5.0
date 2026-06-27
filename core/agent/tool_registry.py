@@ -72,7 +72,13 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
         "instruccion_requerida": True,
         "descripcion": "Gestionar la memoria del agente (ver, borrar, recordar).",
     },
-}
+    "file_write": {
+    "node": "node_file_write",
+    "instruccion_requerida": False,  # puede inferir contenido de plan_resultados
+    "descripcion": "Guardar el resultado de un paso anterior (o texto dado) en un archivo.",
+     },
+  }
+
 
 # Conjunto de nombres de tools válidos (conveniencia)
 TOOLS_VALIDAS: frozenset[str] = frozenset(TOOL_REGISTRY.keys())

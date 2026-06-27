@@ -78,9 +78,11 @@ def test_retry_exito_reanuda_paso_siguiente():
     assert _route_after_retry(s) == "plan_executor"
 
 
-def test_retry_exito_un_paso_finalize():
+def test_retry_exito_un_paso_accion_synthesizer():
+    # Tras un retry exitoso, una tool de ACCIÓN de 1 paso (shell) pasa por el
+    # synthesizer para que el modelo redacte el cierre (Fix 9), no a finalize.
     s = _st(plan_pasos=[{"tool": "shell"}], plan_index=1, error_activo=False)
-    assert _route_after_retry(s) == "finalize"
+    assert _route_after_retry(s) == "plan_synthesizer"
 
 
 def test_retry_exito_multi_synthesizer():

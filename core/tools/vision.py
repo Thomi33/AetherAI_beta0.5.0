@@ -60,6 +60,10 @@ def ver_pantalla(pregunta: str = "¿Qué ves en esta pantalla?") -> str:
         prompt_ajustado = (
             "Eres un asistente técnico experto en análisis de interfaces de usuario. "
             "La siguiente imagen es una captura de pantalla del escritorio del sistema operativo del usuario. "
+            "El sistema operativo es Linux (Arch Linux), usando Hyprland como compositor de Wayland. "
+            "NO es macOS, NO es Windows. No asumas estilos de barra superior, dock o iconos típicos de macOS: "
+            "describí únicamente lo que realmente ves en la imagen, identificando aplicaciones, ventanas y barras "
+            "según su apariencia real, sin presuponer un sistema operativo distinto al indicado. "
             "No contiene personas reales ni datos personales de nadie. Describe de forma objetiva, técnica y detallada "
             "las ventanas, el texto, código, barras de estado o aplicaciones que se encuentran visibles.\n\n"
             f"Pregunta del usuario: {pregunta}"

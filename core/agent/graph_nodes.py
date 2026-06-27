@@ -50,6 +50,7 @@ from core.tools.url_reader import leer_url
 from core.tools.vision import ver_pantalla
 from core.tools.flatpak_manager import buscar_flatpak_en_memoria
 from core.parser.shell_parser import extraer_comando_shell
+from core.tools.file_writer import escribir_archivo
 
 from core.agent.graph_state import AetherState
 
@@ -83,9 +84,33 @@ def _llm_chat(system: str, user: str, on_token=None) -> str:
     return respuesta
 
 
-def _system_prompt(mem: dict) -> str:
-    """Construye el system prompt completo con contexto de memoria."""
-    return construir_backstory(construir_contexto_memoria(mem))
+# CAMBIO EN graph_nodes.py
+# Reemplazar la función _system_prompt() existente por esta:
+
+def _system_prompt(mem: dict, state: "AetherState | None" = None) -> str:
+    """
+    Construye el system prompt.
+    Si el Context Manager ya preparó context_slots, los usa directamente.
+    Si no (fallback), construye el contexto desde cero con el tema vacío.
+    """
+    from core.memory.context_builder import construir_contexto_memoria
+    from core.agent.prompts import construir_backstory
+
+    # Caso normal: el Context Manager ya hizo el trabajo
+    if state is not None:
+        slots = state.get("context_slots") or {}
+        contexto = slots.get("contexto", "")
+        if contexto:
+            return construir_backstory(contexto)
+
+    # Fallback: construir sin tema (igual que antes pero sin flatpaks/preferencias legacy)
+    contexto = construir_contexto_memoria(mem, tema="")
+    return construir_backstory(contexto)
+
+
+# Todos los nodos que llaman _system_prompt(mem) deben pasar también state:
+#   _system_prompt(mem, state)         ← forma correcta
+#   _system_prompt(mem)                ← sigue funcionando (fallback)
 
 
 def _confirmar_usuario(mensaje: str) -> bool:
@@ -182,7 +207,7 @@ def _detectar_intent_keywords(orden_lower: str) -> str | None:
         return "vision"
     if any(x in o for x in _KW_LAUNCH_N):
         return "launch"
-    if any(x in o for x in _KW_WEB_N):
+    if any(re.search(rf"\b{re.escape(x)}\b", o) for x in _KW_WEB_N):
         return "web"
     if _KW_CODIGO.search(o):
         return "codigo"
@@ -567,7 +592,7 @@ def node_web(state: AetherState) -> dict:
         print(t, end="", flush=True)
 
     respuesta = _llm_chat(
-        system=_system_prompt(mem),
+        system=_system_prompt(mem, state),
         user=(
             f"El usuario pregunta: {orden}\n\n"
             f"Resultados de búsqueda web:\n{contexto_web}\n\n"
@@ -607,7 +632,7 @@ def node_shell(state: AetherState) -> dict:
         print(t, end="", flush=True)
 
     llm_resp = _llm_chat(
-        system=_system_prompt(mem),
+        system=_system_prompt(mem, state),
         user=orden,
         on_token=_on_token,
     )
@@ -620,7 +645,7 @@ def node_shell(state: AetherState) -> dict:
     if not comando:
         print("⚠️  [SHELL]: No se detectó formato [SHELL]...[/SHELL], reintentando con prompt explícito...")
         llm_resp_retry = _llm_chat(
-            system=_system_prompt(mem),
+            system=_system_prompt(mem, state),
             user=(
                 f"Genera SOLO el comando shell para ejecutar esta orden.\n"
                 f"Orden: {orden}\n\n"
@@ -835,7 +860,7 @@ def node_codigo(state: AetherState) -> dict:
         print(t, end="", flush=True)
 
     llm_resp = _llm_chat(
-        system=_system_prompt(mem),
+        system=_system_prompt(mem, state),
         user=orden,
         on_token=_on_token,
     )
@@ -966,7 +991,7 @@ def node_text(state: AetherState) -> dict:
         print(t, end="", flush=True)
 
     respuesta = _llm_chat(
-        system=_system_prompt(mem),
+        system=_system_prompt(mem, state),
         user=orden,
         on_token=_on_token,
     )
@@ -1056,7 +1081,7 @@ def node_finalize(state: AetherState) -> dict:
     respuesta = state.get("final_response", "")
 
     if respuesta:
-        registrar_turno(mem, "jarvis", respuesta)
+        registrar_turno(mem, "jarvis", respuesta, sesion_id=state.get("sesion_id", ""))
 
     print(f"\n{'─'*50}")
     return {"done": True}
@@ -1141,7 +1166,7 @@ def node_error_diagnose(state: AetherState) -> dict:
         )
 
     print("\n🤖 [DIAGNÓSTICO]: Generando fix...")
-    fix_raw = _llm_chat(system=_system_prompt(mem), user=prompt_fix)
+    fix_raw = _llm_chat(system=_system_prompt(mem, state), user=prompt_fix)
 
     # ── 3. Extraer fix del output del LLM ───────────────────────────
     fix_propuesto = ""
@@ -1350,7 +1375,7 @@ def node_error_fallback(state: AetherState) -> dict:
     elif error_ctx == "codigo":
         codigo_original = state.get("_codigo_original", "")
         fix_raw = _llm_chat(
-            system=_system_prompt(mem),
+            system=_system_prompt(mem, state),
             user=(
                 f"Este código falla con dependencias externas:\n```\n{codigo_original}\n```\n"
                 "Reescríbelo usando solo la librería estándar de Python. "
@@ -1542,7 +1567,7 @@ def node_plan_synthesizer(state: AetherState) -> dict:
         print(t, end="", flush=True)
     
     respuesta = _llm_chat(
-        system=_system_prompt(mem),
+        system=_system_prompt(mem, state),
         user=(
             f"El usuario pidió: {orden}\n\n"
             f"Ejecuté {len(plan_pasos)} herramientas secuencialmente:\n"
@@ -1560,4 +1585,42 @@ def node_plan_synthesizer(state: AetherState) -> dict:
         "llm_response": respuesta,
         "messages": [AIMessage(content=respuesta)],
         "plan_activo": False,
+    }
+# ══════════════════════════════════════════════════════════════════════
+# NODO: FILE_WRITE
+# ══════════════════════════════════════════════════════════════════════
+
+def node_file_write(state: AetherState) -> dict:
+    """
+    Guarda contenido en un archivo. Si el paso no trae contenido explícito
+    (args.contenido), usa el resultado del paso INMEDIATAMENTE ANTERIOR
+    del plan (plan_resultados[-1]) — caso típico: "buscá X y guardalo".
+    """
+    orden = state["orden"]
+    plan_resultados = state.get("plan_resultados") or []
+
+    contenido = None
+    # Si el paso vino con contenido explícito en args, usarlo
+    # (sub_estado["orden"] ya incluye [CONTEXTO DE PASOS PREVIOS] como texto,
+    # así que preferimos plan_resultados crudo si existe)
+    if plan_resultados:
+        contenido = plan_resultados[-1]
+
+    if not contenido:
+        # Fallback: usar la orden misma como contenido (mejor que fallar)
+        contenido = orden
+
+    nombre, exito = escribir_archivo(orden, str(contenido))
+
+    if not exito:
+        return {
+            "error_activo":   True,
+            "error_mensaje":  f"No se pudo escribir el archivo '{nombre}'.",
+            "error_contexto": "file_write",
+        }
+
+    msg = f"Guardado en {nombre}"
+    return {
+        "final_response": msg,
+        "messages":        [AIMessage(content=msg)],
     }

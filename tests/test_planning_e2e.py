@@ -51,7 +51,7 @@ class _Mocks:
             return dict(self.salidas.get(tool, {"final_response": f"[{tool}] ok"}))
         return _fake_node
 
-    def _fake_llm_chat(self, system, user, on_token=None):
+    def _fake_llm_chat(self, system, user, on_token=None, stop=None, stop_regex=None):
         # Sólo el synthesizer usa _llm_chat en el setup mockeado
         self.synth_calls += 1
         return "RESPUESTA SINTETIZADA"
@@ -188,13 +188,16 @@ def test_backwards_compat_single_tool_text():
     assert result["final_response"] == "¡Hola! Estoy bien."
 
 
-def test_backwards_compat_single_tool_launch():
+def test_single_tool_accion_se_resume():
+    # Fix 9: una tool de ACCIÓN de 1 paso (launch) pasa por el synthesizer para
+    # que el modelo redacte el cierre natural (resumen + frase amena).
     salidas = {"launch": {"final_response": "firefox lanzado"}}
     with _Mocks(salidas=salidas) as m:
         estado = crear_estado_inicial("abre firefox", {}, True)
         result = get_graph().invoke(estado)
     assert m.dispatches == ["launch"], m.dispatches
-    assert m.synth_calls == 0
+    assert m.synth_calls == 1, m.synth_calls          # ← ahora SÍ se resume
+    assert result["final_response"] == "RESPUESTA SINTETIZADA"
 
 
 if __name__ == "__main__":

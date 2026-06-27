@@ -40,7 +40,7 @@ Si un paso marca error_activo:
 ```
 
 - `tool` (obligatorio): debe existir en `TOOL_REGISTRY`
-  (`text, web, shell, launch, vision, codigo, memory`).
+  (`text, web, shell, launch, vision, codigo, memory, file_write`).
 - `instruccion` (obligatorio salvo `vision`): qué debe hacer el paso.
 - `args` (opcional): dict con datos específicos (`query`, `command`, `app`, ...).
 
@@ -71,8 +71,8 @@ el estado del grafo.
 - Entrada recomendada: `core/services/graph_service.py::procesar_orden_grafo`.
 - El CLI (`run.py` → `cli/main.py` → `backend/core/aether_service.py`) usa este
   motor.
-- `core/services/aether_service.py` (CrewAI) quedó **DEPRECADO** (además estaba
-  roto al importar: dependía de símbolos inexistentes en `error_handler`).
+- El servicio legado de CrewAI y los launchers `jarvis*.py` fueron **eliminados**
+  (junto con el paquete `crewai`): el flujo es **LangGraph-only**.
 - `node_router` se conserva como helper **deprecado**; ya no está cableado en
   el grafo (su lógica de keywords vive en `_detectar_intent_keywords`,
   reutilizada por el planner).
@@ -83,15 +83,25 @@ Todos corren sin Ollama (mockean LLM/tools) y usan memoria normalizada:
 
 ```bash
 python test_planning.py        # runner agregado de toda la suite tests/
-# o individualmente:
-python tests/test_memoria.py
-python tests/test_estado.py
-python tests/test_tool_registry.py
-python tests/test_executor.py
-python tests/test_planner.py
-python tests/test_error_loop.py
-python tests/test_servicio.py
-python tests/test_integracion.py   # end-to-end con el grafo real (mocks)
+# o individualmente (la suite tiene 18 módulos test_*.py), p.ej.:
+python tests/test_memoria.py            # memoria + normalizar_mem
+python tests/test_estado.py             # factory crear_estado_inicial
+python tests/test_tool_registry.py      # registro de tools + validar_plan()
+python tests/test_executor.py           # ejecución de pasos
+python tests/test_planner.py            # decisión del planner
+python tests/test_planner_decision.py   # casos de decisión del planner
+python tests/test_routing_quality.py    # calidad del ruteo por intención
+python tests/test_error_loop.py         # loop del error handler
+python tests/test_plan_error_routing.py # error handler dentro de un plan
+python tests/test_servicio.py           # graph_service / procesar_orden_grafo
+python tests/test_integracion.py        # end-to-end con el grafo real (mocks)
+python tests/test_planning_e2e.py       # planning multi-tool end-to-end
+python tests/test_filewrite_flow.py     # flujo de file_write
+python tests/test_shell_stop.py         # corte de generación de shell
+python tests/test_codigo_stop.py        # corte de generación de código
+python tests/test_parser_shell.py       # extracción [SHELL]...[/SHELL]
+python tests/test_context_budget.py     # presupuesto de contexto conversacional
+python tests/test_context_isolation.py  # aislamiento de contexto en planes
 ```
 
 ## Garantías

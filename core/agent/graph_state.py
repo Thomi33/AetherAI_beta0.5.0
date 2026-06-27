@@ -51,6 +51,13 @@ class AetherState(TypedDict):
     # ── Visión ───────────────────────────────────────────────────────
     vision_result:  str           # descripción retornada por ver_pantalla()
 
+    # ── Context Manager ──────────────────────────────────────────────
+    sesion_id:        str           # identificador único de sesión (UUID)
+    context_slots:    dict          # {"tema": "...", "contexto": "...", ...}
+    context_dump:     str           # log legible de qué se inyectó
+    tema_actual:      str           # tool/tema detectado (ej. "web", "shell", etc.)
+    historial_filtrado: list        # turnos relevantes (para debug)
+
     # ── Código ───────────────────────────────────────────────────────
     _codigo_original: str         # código generado antes del primer error
     _archivo_codigo:  str         # ruta del archivo temporal (.py/.sh)
@@ -96,10 +103,12 @@ def crear_estado_inicial(orden: str, mem: dict, modo_autonomo: bool = True) -> "
     # Import local para evitar import circular (memory_manager → no depende de state)
     from core.memory.memory_manager import normalizar_mem
 
+    mem_norm = normalizar_mem(mem)
+
     return {
         # ── Entrada ──────────────────────────────────────────────────
         "orden":         orden,
-        "mem":           normalizar_mem(mem),
+        "mem":           mem_norm,
         "modo_autonomo": modo_autonomo,
 
         # ── Control de flujo ─────────────────────────────────────────
@@ -134,6 +143,13 @@ def crear_estado_inicial(orden: str, mem: dict, modo_autonomo: bool = True) -> "
         "vision_result":    "",
         "_codigo_original": "",
         "_archivo_codigo":  "",
+
+        # ── Context Manager ──────────────────────────────────────────
+        "sesion_id":        mem_norm.get("sesion_id", ""),
+        "context_slots":    {},
+        "context_dump":     "",
+        "tema_actual":      "",
+        "historial_filtrado": [],
 
         # ── Error handler ────────────────────────────────────────────
         "error_activo":          False,

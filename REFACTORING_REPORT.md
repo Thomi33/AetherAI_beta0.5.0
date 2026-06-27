@@ -2,9 +2,15 @@
 
 ## ✅ ESTADO: COMPLETADO + MIGRACIÓN LANGGRAPH
 
-**Última actualización:** 2026-06-24
+**Última actualización:** 2026-06-25
 
 Refactorización completa del monolito `jarvis.py` en arquitectura modular + migración de orquestador CrewAI → LangGraph.
+
+> **Addendum (2026-06-25) — CrewAI eliminado por completo.** En una limpieza
+> posterior se borraron los archivos legados de CrewAI (`builder.py`,
+> `executor.py`, el servicio deprecado y los launchers `jarvis*.py`) y se
+> **desinstaló el paquete `crewai`** del entorno. El motor es **LangGraph-only**;
+> los snippets "Antes (CrewAI)" de abajo se conservan solo como contexto histórico.
 
 ---
 
@@ -35,9 +41,8 @@ core/
 │   └── response_parser.py   # Análisis de salida con LLM
 ├── agent/                   # ← CAMBIO ARQUITECTÓNICO CRÍTICO
 │   ├── __init__.py
-│   ├── prompts.py           # Prompts y backstory dinámico
-│   ├── builder.py           # [LEGACY] Constructor CrewAI (obsoleto)
-│   ├── executor.py          # [LEGACY] Ejecución Crew.kickoff() (obsoleto)
+│   ├── prompts.py           # Prompts: backstory de ejecución + persona de charla
+│   #  builder.py / executor.py (CrewAI) — ELIMINADOS (limpieza 2026-06-25)
 │   │
 │   ├── graph.py             # [NUEVO] Documentación del grafo LangGraph
 │   ├── graph_builder.py     # [NUEVO] Constructor del StateGraph (reemplaza CrewAI)

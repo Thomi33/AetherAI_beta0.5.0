@@ -1,11 +1,17 @@
 """
-Escritura segura de archivos con auto-detección de extensión.
+Escritura segura de archivos con auto-detección de extensión y ruta.
 """
+import os
 import re
+
+from core.config.settings import CARPETA_AETHER
 
 
 _EXT_MAP = {"txt": ".txt", "json": ".json", "md": ".md",
             "sh": ".sh", "py": ".py", "html": ".html"}
+
+# Token de ruta/archivo: admite ~, /, subdirectorios y una extensión conocida.
+_RE_RUTA = re.compile(r"[~\w./\-]+\.(?:txt|md|json|sh|py|html|csv|log)")
 
 
 def _detectar_extension(orden: str) -> str:
@@ -16,19 +22,48 @@ def _detectar_extension(orden: str) -> str:
     return ".txt"
 
 
+def _resolver_destino(orden: str) -> str:
+    """
+    Resuelve la ruta ABSOLUTA donde escribir, a partir de la orden:
+
+    - Si la orden trae una ruta ABSOLUTA o con `~` (p.ej. ~/Documentos/x.txt,
+      /tmp/y.md) → se respeta (expandiendo `~`).
+    - Si trae un nombre/relativo (p.ej. precio.txt, sub/p.txt) → va dentro de
+      la carpeta dedicada CARPETA_AETHER (~/Aether).
+    - Si no trae nombre → nombre por defecto en CARPETA_AETHER.
+
+    Solo se busca el nombre en la parte de la orden ANTERIOR al bloque
+    "[CONTEXTO DE PASOS PREVIOS]" para no confundir una URL de los resultados
+    web con el nombre del archivo.
+    """
+    cabecera = orden.split("[CONTEXTO DE PASOS PREVIOS]")[0]
+    m = _RE_RUTA.search(cabecera)
+    candidato = m.group(0) if m else f"reporte_jarvis{_detectar_extension(cabecera)}"
+
+    candidato = os.path.expanduser(candidato)
+    if os.path.isabs(candidato):
+        destino = candidato
+    else:
+        destino = os.path.join(str(CARPETA_AETHER), candidato)
+    return os.path.abspath(destino)
+
+
 def escribir_archivo(orden: str, contenido: str) -> tuple[str, bool]:
     """
-    Escribe contenido a archivo.
-    Retorna (nombre_archivo, exito).
+    Escribe `contenido` en el archivo resuelto desde `orden`.
+
+    Retorna (ruta_absoluta, exito). Crea los directorios intermedios si hace
+    falta. La ruta retornada es SIEMPRE absoluta para que el usuario sepa
+    exactamente dónde quedó el archivo.
     """
-    m = re.search(r"[\w_\-]+\.(?:txt|md|json|sh|py|html)", orden)
-    nombre = m.group(0) if m else f"reporte_jarvis{_detectar_extension(orden)}"
+    destino = _resolver_destino(orden)
     contenido_limpio = re.sub(
         r"```[\w]*\n(.*?)\n```", r"\1", contenido, flags=re.DOTALL
     ).strip()
     try:
-        with open(nombre, "w", encoding="utf-8") as f:
+        os.makedirs(os.path.dirname(destino), exist_ok=True)
+        with open(destino, "w", encoding="utf-8") as f:
             f.write(contenido_limpio)
-        return nombre, True
+        return destino, True
     except Exception:
-        return nombre, False
+        return destino, False

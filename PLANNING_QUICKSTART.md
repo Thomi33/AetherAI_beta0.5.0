@@ -35,6 +35,7 @@ python test_planning.py                                                       # 
 
 ## Notas
 
-- `node_router` y `core/services/aether_service.py` (CrewAI) están **deprecados**.
+- `node_router` está **deprecado** (su lógica de keywords vive en el planner). El
+  servicio legado de CrewAI y los launchers `jarvis*.py` fueron **eliminados**.
 - El planner usa keywords deterministas primero; el LLM sólo para multi-tool.
 - Si el LLM no da un plan válido → fallback a plan de 1 paso.

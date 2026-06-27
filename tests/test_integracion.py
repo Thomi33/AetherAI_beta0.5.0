@@ -28,7 +28,7 @@ def _instalar_mocks():
         "leer_url":          gn.leer_url,
     }
 
-    def fake_llm(system, user, on_token=None):
+    def fake_llm(system, user, on_token=None, stop=None, stop_regex=None):
         resp = "RESPUESTA_LLM"
         if on_token:
             on_token(resp)

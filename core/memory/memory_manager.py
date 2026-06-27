@@ -1,223 +1,382 @@
 """
-Gestor de memoria persistente y volátil.
+memory_manager.py — Gestor de memoria de Aether.
+Habla directo con la DB de producción (current.db). Sin capas intermedias.
+
+Tablas esperadas:
+  conversaciones  — historial filtrable por sesión y tema
+  comandos        — comandos shell ejecutados
+  recuerdos       — hechos permanentes (archival memory)
+  core_memory     — estado siempre presente (se auto-crea si no existe)
 """
-import json
+import sqlite3
+from contextlib import contextmanager
 from datetime import datetime
+from pathlib import Path
 
-from core.config.settings import MAX_HISTORIAL
-from core.memory.sqlite_db import get_db_connection, inicializar_db
+from core.config.settings import BASE_AETHER
+
+# ── Ruta de la DB ────────────────────────────────────────────────────
+# Antes apuntaba a /mnt/basurero/Javier/db/memoria.db (ruta vieja).
+# Ahora usa la DB de producción documentada en el README.
+DB_PATH = Path(BASE_AETHER) / "db" / "current.db"
+
+# ── Límites ──────────────────────────────────────────────────────────
+MAX_HISTORIAL_RAM = 200   # turnos que se mantienen en el dict RAM
+MAX_TEXTO         = 1000  # caracteres máximos por turno/comando
 
 
+# ══════════════════════════════════════════════════════════════════════
+# CONEXIÓN
+# ══════════════════════════════════════════════════════════════════════
+@contextmanager
+def _db():
+    """Context manager para conexiones SQLite seguras."""
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(DB_PATH)
+    con.row_factory = sqlite3.Row
+    try:
+        yield con
+        con.commit()
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ESQUEMA — asegura que las tablas existen (idempotente)
+# ══════════════════════════════════════════════════════════════════════
+def asegurar_esquema() -> None:
+    """
+    Crea las tablas que memory_manager necesita si no existen.
+    Llama a esto UNA VEZ al arrancar el agente (antes de cargar_memoria).
+    """
+    try:
+        with _db() as con:
+            con.executescript("""
+                CREATE TABLE IF NOT EXISTS conversaciones (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    fecha      TEXT,
+                    rol        TEXT,
+                    texto      TEXT,
+                    sesion_id  TEXT DEFAULT '',
+                    tema       TEXT DEFAULT '',
+                    proyecto   TEXT DEFAULT ''
+                );
+
+                CREATE TABLE IF NOT EXISTS comandos (
+                    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                    fecha      TEXT,
+                    orden      TEXT,
+                    cmd        TEXT,
+                    sesion_id  TEXT DEFAULT '',
+                    exitoso    INTEGER DEFAULT 1
+                );
+
+                CREATE TABLE IF NOT EXISTS recuerdos (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    fecha       TEXT,
+                    categoria   TEXT DEFAULT '',
+                    contenido   TEXT,
+                    importancia INTEGER DEFAULT 1
+                );
+
+                CREATE TABLE IF NOT EXISTS core_memory (
+                    clave        TEXT PRIMARY KEY,
+                    valor        TEXT,
+                    actualizado  TEXT
+                );
+            """)
+        print("[MEMORIA] Esquema verificado/creado en", DB_PATH)
+    except Exception as e:
+        print(f"[MEMORIA] ⚠️  No se pudo asegurar esquema: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# DICT RAM — estructura en memoria durante la sesión
+# ══════════════════════════════════════════════════════════════════════
 def _memoria_vacia() -> dict:
-    """Retorna estructura de memoria vacía con valores por defecto."""
     return {
-        "preferencias": {
-            "nombre_usuario": "Thomas",
-            "navegador":      "brave",
-            "notas":          [],
-        },
-        "flatpaks":           {},
-        "historial_comandos": [],
-        "conversacion":       [],
+        "conversacion":       [],   # [{rol, texto, fecha, sesion_id, tema}]
+        "historial_comandos": [],   # [{orden, cmd, fecha, sesion_id}]
+        "core":               {},   # espejo de core_memory
+        "sesion_id":          "",
     }
 
 
 def normalizar_mem(mem: dict | None) -> dict:
-    """
-    Garantiza que `mem` cumpla el esquema obligatorio de memoria de Aether.
-
-    Rellena de forma NO destructiva cualquier clave/sub-clave faltante con
-    los valores por defecto. Esto evita KeyError en nodos y en el
-    constructor de contexto cuando se recibe un `mem` parcial o vacío
-    (p.ej. en tests o integraciones externas).
-
-    Esquema garantizado:
-        preferencias: dict con nombre_usuario, navegador, notas (list)
-        flatpaks: dict
-        historial_comandos: list
-        conversacion: list
-
-    Muta y retorna el mismo dict para conveniencia. Si `mem` es None,
-    retorna una estructura vacía nueva.
-    """
+    """Garantiza que el dict RAM tenga la estructura correcta."""
     base = _memoria_vacia()
-
     if not isinstance(mem, dict):
         return base
-
-    # ── preferencias (dict anidado) ──────────────────────────────────
-    prefs = mem.get("preferencias")
-    if not isinstance(prefs, dict):
-        prefs = {}
-    for clave, valor_def in base["preferencias"].items():
-        if clave not in prefs or prefs[clave] is None:
-            prefs[clave] = valor_def
-    # 'notas' debe ser siempre lista
-    if not isinstance(prefs.get("notas"), list):
-        prefs["notas"] = []
-    mem["preferencias"] = prefs
-
-    # ── flatpaks (dict) ──────────────────────────────────────────────
-    if not isinstance(mem.get("flatpaks"), dict):
-        mem["flatpaks"] = {}
-
-    # ── historial_comandos (list) ────────────────────────────────────
-    if not isinstance(mem.get("historial_comandos"), list):
-        mem["historial_comandos"] = []
-
-    # ── conversacion (list) ──────────────────────────────────────────
     if not isinstance(mem.get("conversacion"), list):
         mem["conversacion"] = []
-
+    if not isinstance(mem.get("historial_comandos"), list):
+        mem["historial_comandos"] = []
+    if not isinstance(mem.get("core"), dict):
+        mem["core"] = {}
+    if "sesion_id" not in mem:
+        mem["sesion_id"] = ""
     return mem
 
 
+# ══════════════════════════════════════════════════════════════════════
+# CORE MEMORY — siempre presente en el contexto
+# ══════════════════════════════════════════════════════════════════════
+def leer_core_memory() -> dict:
+    """Lee toda la core_memory como dict {clave: valor}."""
+    try:
+        with _db() as con:
+            filas = con.execute("SELECT clave, valor FROM core_memory").fetchall()
+            return {f["clave"]: f["valor"] for f in filas}
+    except Exception as e:
+        print(f"[MEMORIA] Error leyendo core_memory: {e}")
+        return {}
+
+
+def actualizar_core(clave: str, valor: str) -> None:
+    """Actualiza o inserta un valor en core_memory."""
+    try:
+        with _db() as con:
+            con.execute("""
+                INSERT INTO core_memory (clave, valor, actualizado)
+                VALUES (?, ?, ?)
+                ON CONFLICT(clave) DO UPDATE SET
+                    valor=excluded.valor,
+                    actualizado=excluded.actualizado
+            """, (clave, valor, datetime.now().isoformat()))
+    except Exception as e:
+        print(f"[MEMORIA] Error actualizando core '{clave}': {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# CARGA INICIAL
+# ══════════════════════════════════════════════════════════════════════
 def cargar_memoria() -> dict:
     """
-    Carga estado en memoria RAM desde DB + defaults.
-    Recupera preferencias, historial de comandos y conversaciones recientes.
+    Carga el dict RAM desde current.db.
+    Se llama una vez al iniciar el agente.
+    Si falla, devuelve memoria vacía (nunca rompe el arranque).
     """
-    inicializar_db()
     mem = _memoria_vacia()
-    
     try:
-        con = get_db_connection()
-        
-        # Preferencias guardadas
-        filas = con.execute(
-            "SELECT contenido FROM recuerdos WHERE categoria='preferencias' ORDER BY id DESC LIMIT 1"
-        ).fetchall()
-        if filas:
-            prefs = json.loads(filas[0]["contenido"])
-            mem["preferencias"].update(prefs)
+        with _db() as con:
+            # Core memory
+            filas = con.execute("SELECT clave, valor FROM core_memory").fetchall()
+            mem["core"] = {f["clave"]: f["valor"] for f in filas}
 
-        # Historial de comandos recientes
-        cmds = con.execute(
-            "SELECT orden, cmd, fecha FROM comandos ORDER BY id DESC LIMIT 50"
-        ).fetchall()
-        mem["historial_comandos"] = [
-            {"orden": r["orden"], "cmd": r["cmd"], "fecha": r["fecha"]}
-            for r in reversed(cmds)
-        ]
+            # Últimos turnos conversacionales
+            turnos = con.execute("""
+                SELECT fecha, rol, texto, sesion_id, tema
+                FROM conversaciones
+                ORDER BY id DESC
+                LIMIT ?
+            """, (MAX_HISTORIAL_RAM,)).fetchall()
+            mem["conversacion"] = [
+                {
+                    "rol":       t["rol"],
+                    "texto":     t["texto"],
+                    "fecha":     t["fecha"],
+                    "sesion_id": t["sesion_id"],
+                    "tema":      t["tema"],
+                }
+                for t in reversed(turnos)
+            ]
 
-        # Últimos turnos conversacionales
-        turnos = con.execute(
-            "SELECT rol, texto, fecha FROM conversaciones ORDER BY id DESC LIMIT 100"
-        ).fetchall()
-        mem["conversacion"] = [
-            {"rol": r["rol"], "texto": r["texto"], "fecha": r["fecha"]}
-            for r in reversed(turnos)
-        ]
-        
-        con.close()
-    except Exception:
-        pass
-    
+            # Últimos comandos
+            cmds = con.execute("""
+                SELECT fecha, orden, cmd, sesion_id
+                FROM comandos
+                ORDER BY id DESC
+                LIMIT 50
+            """).fetchall()
+            mem["historial_comandos"] = [
+                {
+                    "orden":     c["orden"],
+                    "cmd":       c["cmd"],
+                    "fecha":     c["fecha"],
+                    "sesion_id": c["sesion_id"],
+                }
+                for c in reversed(cmds)
+            ]
+    except Exception as e:
+        print(f"[MEMORIA] Error cargando memoria: {e}")
+
     return normalizar_mem(mem)
 
 
-def guardar_preferencias(mem: dict) -> None:
-    """Persiste preferencias en tabla recuerdos."""
+# ══════════════════════════════════════════════════════════════════════
+# CONVERSACIÓN
+# ══════════════════════════════════════════════════════════════════════
+def registrar_turno(
+    mem: dict,
+    rol: str,
+    texto: str,
+    sesion_id: str = "",
+    tema: str = "",
+    proyecto: str = "",
+) -> None:
+    """Registra un turno en DB y en el dict RAM."""
+    texto = texto[:MAX_TEXTO]
+    fecha = datetime.now().isoformat()
     try:
-        con = get_db_connection()
-        con.execute(
-            "INSERT INTO recuerdos (fecha, categoria, contenido, importancia) VALUES (?,?,?,?)",
-            (
-                datetime.now().isoformat(),
-                "preferencias",
-                json.dumps(mem["preferencias"], ensure_ascii=False),
-                10
-            )
-        )
-        con.commit()
-        con.close()
-    except Exception:
-        pass
+        with _db() as con:
+            con.execute("""
+                INSERT INTO conversaciones (fecha, rol, texto, sesion_id, tema, proyecto)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (fecha, rol, texto, sesion_id, tema, proyecto))
+        print(f"[MEMORIA] Turno guardado | rol={rol} | tema={tema} | texto={texto[:40]}...")
+    except Exception as e:
+        print(f"[MEMORIA] Error registrando turno: {e}")
 
-
-def guardar_memoria(mem: dict) -> None:
-    """Wrapper de compatibilidad que persiste preferencias."""
-    guardar_preferencias(mem)
-
-
-def registrar_turno_db(rol: str, texto: str) -> None:
-    """Registra turno conversacional en DB."""
-    con = get_db_connection()
-    con.execute(
-        "INSERT INTO conversaciones (fecha, rol, texto) VALUES (?, ?, ?)",
-        (datetime.now().isoformat(), rol, texto[:800])
-    )
-    con.commit()
-    con.close()
-    print(f"DEBUG SQLITE: Guardando turno en DB | Rol: {rol} | Texto: {texto[:50]}...")
-
-
-def registrar_turno(mem: dict, rol: str, texto: str) -> None:
-    """Registra turno en DB y en memoria RAM."""
-    registrar_turno_db(rol, texto)
     mem["conversacion"].append({
-        "rol":   rol,
-        "texto": texto[:800],
-        "fecha": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "rol": rol, "texto": texto,
+        "fecha": fecha, "sesion_id": sesion_id, "tema": tema,
     })
-    mem["conversacion"] = mem["conversacion"][-MAX_HISTORIAL:]
+    mem["conversacion"] = mem["conversacion"][-MAX_HISTORIAL_RAM:]
 
 
-def registrar_comando_db(orden: str, cmd: str) -> None:
-    """Registra comando ejecutado en DB."""
-    con = get_db_connection()
-    con.execute(
-        "INSERT INTO comandos (fecha, orden, cmd) VALUES (?, ?, ?)",
-        (datetime.now().isoformat(), orden, cmd),
-    )
-    con.commit()
-    con.close()
-    print(f"DEBUG SQLITE CMD: {cmd}")
+# ══════════════════════════════════════════════════════════════════════
+# COMANDOS
+# ══════════════════════════════════════════════════════════════════════
+def registrar_comando(
+    mem: dict,
+    orden: str,
+    cmd: str,
+    sesion_id: str = "",
+    exitoso: bool = True,
+) -> None:
+    """Registra un comando shell en DB y en el dict RAM."""
+    cmd   = cmd[:MAX_TEXTO]
+    orden = orden[:MAX_TEXTO]
+    fecha = datetime.now().isoformat()
+    try:
+        with _db() as con:
+            con.execute("""
+                INSERT INTO comandos (fecha, orden, cmd, sesion_id, exitoso)
+                VALUES (?, ?, ?, ?, ?)
+            """, (fecha, orden, cmd, sesion_id, int(exitoso)))
+    except Exception as e:
+        print(f"[MEMORIA] Error registrando comando: {e}")
 
-
-def registrar_comando(mem: dict, orden: str, cmd: str) -> None:
-    """Registra comando en DB y en memoria RAM."""
-    registrar_comando_db(orden, cmd)
-    entrada = {"orden": orden, "cmd": cmd, "fecha": datetime.now().strftime("%Y-%m-%d %H:%M")}
-    mem["historial_comandos"].append(entrada)
+    mem["historial_comandos"].append({
+        "orden": orden, "cmd": cmd,
+        "fecha": fecha, "sesion_id": sesion_id,
+    })
     mem["historial_comandos"] = mem["historial_comandos"][-50:]
 
 
-def obtener_ultimos_turnos(n: int = 20) -> list:
-    """Retrieves last n conversation turns from DB."""
+# ══════════════════════════════════════════════════════════════════════
+# RECUERDOS (archival memory)
+# ══════════════════════════════════════════════════════════════════════
+def guardar_recuerdo(
+    contenido: str,
+    categoria: str = "",
+    importancia: int = 1,
+) -> None:
+    """Guarda un hecho permanente en recuerdos."""
     try:
-        con = get_db_connection()
-        filas = con.execute(
-            "SELECT rol, texto FROM conversaciones ORDER BY id DESC LIMIT ?", (n,)
-        ).fetchall()
-        con.close()
-        return list(reversed(filas))
-    except Exception:
-        return []
+        with _db() as con:
+            con.execute("""
+                INSERT INTO recuerdos (fecha, categoria, contenido, importancia)
+                VALUES (?, ?, ?, ?)
+            """, (datetime.now().isoformat(), categoria, contenido[:MAX_TEXTO], importancia))
+    except Exception as e:
+        print(f"[MEMORIA] Error guardando recuerdo: {e}")
 
-# memory_manager.py — agregar esta función
 
 def obtener_recuerdos(
     categoria: str | None = None,
-    importancia_min: int = 0,
+    importancia_min: int = 1,
     limit: int = 20,
 ) -> list[dict]:
-    """
-    Lee de la tabla 'recuerdos' con filtros. Reemplaza el SELECT
-    hardcodeado a categoria='preferencias' que ignoraba todo lo demás.
-    """
+    """Lee recuerdos filtrando por categoría e importancia mínima."""
     try:
-        con = get_db_connection()
-        sql = "SELECT categoria, contenido, importancia, fecha FROM recuerdos WHERE importancia >= ?"
-        params = [importancia_min]
-        if categoria:
-            sql += " AND categoria = ?"
-            params.append(categoria)
-        sql += " ORDER BY importancia DESC, id DESC LIMIT ?"
-        params.append(limit)
-
-        filas = con.execute(sql, params).fetchall()
-        con.close()
-        return [dict(f) for f in filas]
-    except Exception:
+        with _db() as con:
+            if categoria:
+                filas = con.execute("""
+                    SELECT fecha, categoria, contenido, importancia
+                    FROM recuerdos
+                    WHERE categoria = ? AND importancia >= ?
+                    ORDER BY importancia DESC, id DESC
+                    LIMIT ?
+                """, (categoria, importancia_min, limit)).fetchall()
+            else:
+                filas = con.execute("""
+                    SELECT fecha, categoria, contenido, importancia
+                    FROM recuerdos
+                    WHERE importancia >= ?
+                    ORDER BY importancia DESC, id DESC
+                    LIMIT ?
+                """, (importancia_min, limit)).fetchall()
+            return [dict(f) for f in filas]
+    except Exception as e:
+        print(f"[MEMORIA] Error leyendo recuerdos: {e}")
         return []
+
+
+# ══════════════════════════════════════════════════════════════════════
+# RECUPERACIÓN POR RELEVANCIA (para el Context Manager)
+# ══════════════════════════════════════════════════════════════════════
+def obtener_turnos_por_tema(tema: str, limit: int = 10) -> list[dict]:
+    """Recupera turnos anteriores del mismo tema (para contexto relevante)."""
+    try:
+        with _db() as con:
+            filas = con.execute("""
+                SELECT fecha, rol, texto, sesion_id
+                FROM conversaciones
+                WHERE tema = ?
+                ORDER BY id DESC
+                LIMIT ?
+            """, (tema, limit)).fetchall()
+            return [dict(f) for f in reversed(filas)]
+    except Exception as e:
+        print(f"[MEMORIA] Error buscando turnos por tema: {e}")
+        return []
+
+
+def obtener_turnos_por_sesion(sesion_id: str) -> list[dict]:
+    """Recupera todos los turnos de una sesión específica."""
+    try:
+        with _db() as con:
+            filas = con.execute("""
+                SELECT fecha, rol, texto, tema
+                FROM conversaciones
+                WHERE sesion_id = ?
+                ORDER BY id ASC
+            """, (sesion_id,)).fetchall()
+            return [dict(f) for f in filas]
+    except Exception as e:
+        print(f"[MEMORIA] Error buscando sesión: {e}")
+        return []
+
+
+def obtener_ultimos_turnos(n: int = 5) -> list[dict]:
+    """Últimos N turnos sin filtro (para debug o fallback)."""
+    try:
+        with _db() as con:
+            filas = con.execute("""
+                SELECT fecha, rol, texto, tema, sesion_id
+                FROM conversaciones
+                ORDER BY id DESC
+                LIMIT ?
+            """, (n,)).fetchall()
+            return [dict(f) for f in reversed(filas)]
+    except Exception as e:
+        print(f"[MEMORIA] Error leyendo últimos turnos: {e}")
+        return []
+
+
+# ══════════════════════════════════════════════════════════════════════
+# ALIAS / COMPAT — para nodos del grafo que todavía esperan estas funcs
+# ══════════════════════════════════════════════════════════════════════
+def guardar_memoria(mem: dict) -> None:
+    """
+    Stub de compatibilidad.
+    Algunos nodos viejos del grafo siguen importando `guardar_memoria`,
+    pero ya no hace falta: cada escritura (registrar_turno / registrar_comando
+    / actualizar_core / guardar_recuerdo) persiste al instante.
+    """
+    # Intencionalmente vacío: la persistencia ya es inmediata.
+    return None
