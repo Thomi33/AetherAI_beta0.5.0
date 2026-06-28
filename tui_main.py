@@ -5,6 +5,7 @@ tui_main.py — Punto de entrada TUI con generación automática de sesión.
 import sys
 import uuid
 import traceback
+import time
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent
@@ -42,10 +43,13 @@ def main():
             if not orden:
                 continue
 
+            t0 = time.perf_counter()
             respuesta = procesar_orden_grafo(
                 orden, mem, modo_autonomo=True
             )
+            elapsed = time.perf_counter() - t0
             print(f"🎙️  Aether: {respuesta}\n")
+            print(f"⏱️  {elapsed:.2f}s\n")
 
         except KeyboardInterrupt:
             break

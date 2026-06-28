@@ -75,7 +75,7 @@ def _llm_chat(system: str, user: str, on_token=None) -> str:
             {"role": "user",   "content": user},
         ],
         stream=True,
-        options={"num_ctx": NUM_CTX},  # ← ventana de contexto configurable
+        options={"num_ctx": NUM_CTX, "num_predict": 1024},  # ← ventana de contexto + límite de tokens
     ):
         token = chunk["message"]["content"]
         if token and on_token:
@@ -306,13 +306,17 @@ def _planner_llm(orden: str, mem: dict) -> list[dict] | None:
 
 Herramientas disponibles:
 - web: búsqueda en internet
-- shell: ejecutar comandos de sistema
+- shell: ejecutar comandos de sistema (NO usar para guardar archivos)
 - launch: abrir aplicaciones
 - vision: capturar/analizar pantalla
 - codigo: generar y ejecutar código
+- file_write: guardar el resultado del paso anterior en un archivo (usar SIEMPRE que el usuario pida guardar/escribir en archivo)
 - text: respuesta directa
 
-Tarea: {orden}
+IMPORTANTE: Para guardar resultados en archivo usa SIEMPRE "file_write", NUNCA "shell" con echo/tee.
+El nodo file_write toma automáticamente el resultado del paso anterior, no necesitas especificar el contenido.
+
+Tarea: {{orden}}
 
 Si necesita UNA sola herramienta, responde: {{"multi_tool": false}}
 
@@ -321,7 +325,7 @@ Si necesita VARIAS en secuencia, responde EXACTAMENTE este formato:
   "multi_tool": true,
   "pasos": [
     {{"tool": "web", "instruccion": "buscar el precio de X", "args": {{"query": "precio X"}}}},
-    {{"tool": "shell", "instruccion": "guardar el resultado en archivo", "args": {{"command": "echo ... > x.txt"}}}}
+    {{"tool": "file_write", "instruccion": "guardar el resultado en un archivo", "args": {{"filename": "precio_x.txt"}}}}
   ]
 }}
 
@@ -491,6 +495,39 @@ def node_planner(state: AetherState) -> dict:
         print(f"   └─ Plan de 1 paso (keyword): tool={intent_kw}")
         return _plan_activado([{"tool": intent_kw, "instruccion": orden}], orden, mem)
 
+    # ── Caso 1.5: persistencia detectada → plan determinista sin LLM ──
+    # Si la orden pide guardar/escribir en archivo junto a otra tool,
+    # construir el plan directamente sin consultar al LLM (evita JSON inválido
+    # y el hábito de gemma4 de generar [SHELL] en vez de file_write).
+    _KW_PERSISTENCIA_N = frozenset(_normalizar(p) for p in _KW_PERSISTENCIA)
+    o_norm = _normalizar(orden_lower)
+    tiene_persistencia = any(p in o_norm for p in _KW_PERSISTENCIA_N)
+    if multi and intent_kw and tiene_persistencia and intent_kw != "shell":
+        import re as _re
+        # Extraer nombre de archivo si el usuario lo especificó
+        m_fname = _re.search(r'[\w\-]+\.(?:txt|md|json|csv|py|sh|html)', orden)
+        filename = m_fname.group(0) if m_fname else f"{intent_kw}_resultado.txt"
+
+        # Herramientas cuyo resultado es "crudo" (scrape, capturas, etc.) y
+        # se beneficia de un paso de limpieza/extracción antes de guardar.
+        # Genérico: no depende de qué se está pidiendo (specs, receta,
+        # noticia...), solo de si la tool de origen produce contenido sin
+        # curar que probablemente incluye ruido (snippets, HTML, metadatos).
+        _TOOLS_CONTENIDO_CRUDO = frozenset({"web", "vision"})
+
+        plan_det = [{"tool": intent_kw, "instruccion": orden, "args": {}}]
+        if intent_kw in _TOOLS_CONTENIDO_CRUDO:
+            plan_det.append(
+                {"tool": "extract", "instruccion": orden, "args": {}}
+            )
+        plan_det.append(
+            {"tool": "file_write", "instruccion": f"guardar resultado en {filename}", "args": {"filename": filename}}
+        )
+
+        pasos_desc = " → ".join(p["tool"] for p in plan_det)
+        print(f"   └─ Plan determinista: {pasos_desc} ({filename})")
+        return _plan_activado(plan_det, orden, mem)
+
     # ── Caso 2: parece multi-tool → intentar plan del LLM ────────────
     if multi:
         print("   └─ Posible multi-tool, consultando LLM...")
@@ -596,7 +633,10 @@ def node_web(state: AetherState) -> dict:
         user=(
             f"El usuario pregunta: {orden}\n\n"
             f"Resultados de búsqueda web:\n{contexto_web}\n\n"
-            "Responde en español, claro y preciso, basándote en los resultados."
+            "Responde en español, claro y preciso, basándote en los resultados. "
+            "NO generes bloques [SHELL] ni intentes guardar nada en un archivo: "
+            "tu única tarea aquí es resumir lo encontrado. Si el usuario pidió "
+            "guardar el resultado, eso lo hace un paso posterior automáticamente."
         ),
         on_token=_on_token,
     )
@@ -1411,8 +1451,9 @@ def node_error_fallback(state: AetherState) -> dict:
 # ══════════════════════════════════════════════════════════════════════
 
 # Campos del nodo de los que se extrae el "resultado" de un paso, en orden
-# de preferencia.
-_CAMPOS_RESULTADO = (
+# de preferencia. Por defecto se prioriza final_response (la síntesis del
+# LLM), que es lo correcto para shell/vision/codigo/texto.
+_CAMPOS_RESULTADO_DEFAULT = (
     "final_response",
     "shell_output",
     "vision_result",
@@ -1420,12 +1461,28 @@ _CAMPOS_RESULTADO = (
     "llm_response",
 )
 
+# FIX (file_write de datos de web): para la tool "web", final_response es
+# solo la narración conversacional del LLM ("voy a armar un archivo...") y
+# NO contiene los datos reales. El contenido sustantivo (snippets de
+# búsqueda + texto leído de la URL) vive en web_results. Si el paso
+# siguiente es file_write, queremos guardar web_results, no la charla.
+_CAMPOS_RESULTADO_POR_TOOL = {
+    "web": ("web_results", "final_response", "llm_response"),
+}
 
-def _extraer_resultado_paso(salida_nodo: dict) -> str:
-    """Extrae un string-resultado representativo de la salida de un nodo."""
+
+def _extraer_resultado_paso(salida_nodo: dict, tool: str = "") -> str:
+    """
+    Extrae un string-resultado representativo de la salida de un nodo.
+
+    `tool` permite usar un orden de prioridad distinto según la herramienta
+    que generó `salida_nodo` (ver _CAMPOS_RESULTADO_POR_TOOL). Si no hay
+    override para esa tool, se usa el orden por defecto.
+    """
     if not isinstance(salida_nodo, dict):
         return ""
-    for campo in _CAMPOS_RESULTADO:
+    campos = _CAMPOS_RESULTADO_POR_TOOL.get(tool, _CAMPOS_RESULTADO_DEFAULT)
+    for campo in campos:
         val = salida_nodo.get(campo)
         if isinstance(val, str) and val.strip():
             return val
@@ -1514,7 +1571,7 @@ def node_plan_executor(state: AetherState) -> dict:
             "error_contexto": tool,
         }
 
-    resultado = _extraer_resultado_paso(salida_nodo)
+    resultado = _extraer_resultado_paso(salida_nodo, tool)
     if not resultado and salida_nodo.get("error_activo"):
         resultado = f"[ERROR] {salida_nodo.get('error_mensaje', 'fallo desconocido')}"
     plan_resultados.append(resultado)
@@ -1587,30 +1644,92 @@ def node_plan_synthesizer(state: AetherState) -> dict:
         "plan_activo": False,
     }
 # ══════════════════════════════════════════════════════════════════════
+# NODO: EXTRACT (limpieza/extracción genérica antes de file_write)
+# ══════════════════════════════════════════════════════════════════════
+
+def node_extract(state: AetherState) -> dict:
+    """
+    Limpia/extrae el resultado del paso anterior antes de guardarlo.
+
+    Genérico a propósito: NO asume "specs", "noticias", "receta" ni ningún
+    dominio. Toma lo que sea que produjo el paso previo (scrape web, salida
+    de shell, descripción de vision, etc.) y le pide al LLM que devuelva
+    SOLO lo que el usuario pidió guardar, en texto plano limpio — sin
+    HTML entities, sin metadatos de búsqueda (snippets/URLs irrelevantes),
+    sin comentarios del propio LLM ("aquí tienes", "voy a guardar", etc.),
+    sin marketing/relleno editorial que no fue pedido.
+
+    Útil entre cualquier tool que genere contenido crudo y `file_write`.
+    """
+    orden = state["orden"]
+    plan_resultados = state.get("plan_resultados") or []
+    contenido_crudo = plan_resultados[-1] if plan_resultados else ""
+
+    if not str(contenido_crudo).strip():
+        # Nada que limpiar: pasar a través sin llamar al LLM.
+        return {"final_response": ""}
+
+    respuesta = _llm_chat(
+        system=(
+            "Eres un extractor de contenido. Tu única tarea es devolver el "
+            "contenido que el usuario pidió, en texto plano y limpio.\n"
+            "Reglas estrictas:\n"
+            "- NO agregues comentarios, saludos, ni frases tipo 'aquí tienes' o "
+            "'voy a guardar esto'.\n"
+            "- NO incluyas metadatos de búsqueda (snippets de varias fuentes, "
+            "URLs, títulos de resultados) salvo que el usuario los haya pedido "
+            "explícitamente.\n"
+            "- NO incluyas entidades HTML sin decodificar (&oacute;, &nbsp;, etc.) "
+            "ni restos de markup.\n"
+            "- NO agregues relleno editorial/marketing que no fue solicitado.\n"
+            "- Si el contenido ya viene limpio y es exactamente lo pedido, "
+            "devuélvelo tal cual, sin modificarlo.\n"
+            "- Responde ÚNICAMENTE con el contenido final a guardar."
+        ),
+        user=(
+            f"El usuario pidió: {orden}\n\n"
+            f"Contenido crudo disponible:\n{str(contenido_crudo)[:6000]}\n\n"
+            "Extrae y devuelve solo lo que corresponde guardar."
+        ),
+    )
+
+    return {"final_response": respuesta.strip()}
+
+
+# ══════════════════════════════════════════════════════════════════════
 # NODO: FILE_WRITE
 # ══════════════════════════════════════════════════════════════════════
 
 def node_file_write(state: AetherState) -> dict:
     """
-    Guarda contenido en un archivo. Si el paso no trae contenido explícito
-    (args.contenido), usa el resultado del paso INMEDIATAMENTE ANTERIOR
-    del plan (plan_resultados[-1]) — caso típico: "buscá X y guardalo".
+    Guarda contenido en un archivo. Toma el resultado del paso anterior
+    (plan_resultados[-1]) como contenido, limpiando bloques [SHELL] y
+    texto narrativo del LLM. Usa el filename de args si el planner lo especificó.
     """
     orden = state["orden"]
     plan_resultados = state.get("plan_resultados") or []
 
-    contenido = None
-    # Si el paso vino con contenido explícito en args, usarlo
-    # (sub_estado["orden"] ya incluye [CONTEXTO DE PASOS PREVIOS] como texto,
-    # así que preferimos plan_resultados crudo si existe)
-    if plan_resultados:
-        contenido = plan_resultados[-1]
+    # Extraer filename de args si el planner lo especificó
+    plan_pasos = state.get("plan_pasos") or []
+    plan_index = state.get("plan_index", 1)
+    idx = max(0, plan_index - 1)
+    paso_actual_args = {}
+    if idx < len(plan_pasos):
+        paso_actual_args = plan_pasos[idx].get("args") or {}
+    filename = paso_actual_args.get("filename") or paso_actual_args.get("nombre")
 
-    if not contenido:
-        # Fallback: usar la orden misma como contenido (mejor que fallar)
-        contenido = orden
+    # Tomar contenido del paso anterior (resultado real)
+    contenido = plan_resultados[-1] if plan_resultados else orden
 
-    nombre, exito = escribir_archivo(orden, str(contenido))
+    # Limpiar bloques [SHELL]...[/SHELL] que el LLM puede incluir en su respuesta
+    contenido_limpio = re.sub(r"\[SHELL\].*?\[/SHELL\]", "", str(contenido), flags=re.DOTALL).strip()
+    if not contenido_limpio:
+        contenido_limpio = str(contenido).strip()
+
+    # Si tenemos filename explícito, pasarlo para que _resolver_destino lo use
+    orden_para_nombre = f"{filename}\n{orden}" if filename else orden
+
+    nombre, exito = escribir_archivo(orden_para_nombre, contenido_limpio)
 
     if not exito:
         return {

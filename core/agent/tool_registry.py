@@ -77,6 +77,15 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
     "instruccion_requerida": False,  # puede inferir contenido de plan_resultados
     "descripcion": "Guardar el resultado de un paso anterior (o texto dado) en un archivo.",
      },
+    "extract": {
+        "node": "node_extract",
+        "instruccion_requerida": False,  # opera sobre plan_resultados del paso previo
+        "descripcion": (
+            "Limpiar/extraer el contenido pedido por el usuario a partir del "
+            "resultado crudo de un paso anterior (descarta metadatos de "
+            "búsqueda, HTML sin decodificar y relleno conversacional)."
+        ),
+    },
   }
 
 

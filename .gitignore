@@ -1,3 +1,57 @@
-# No changes needed - only a markdown file was added
+# Python caches
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
-LATENCY_IMPROVEMENT_PLAN.md is a source document that should be tracked in version control. No build artifacts, dependencies, or temporary files were detected in the changes, so no additional ignore rules are necessary.
+# Virtual environments
+env/
+venv/
+.venv/
+crewai-env/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Environment
+.env
+.env.local
+.env.*.local
+backend/.env
+!.env.example
+
+# Logs
+logs/
+*.log
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Aether
+embeddings/
+screenshots/
+backups/
+
+# Build
+dist/
+build/
+
+# Backups
+*.bak
+*.bak2
+*.old

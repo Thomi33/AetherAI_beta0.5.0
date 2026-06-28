@@ -1,0 +1,12 @@
+AMD Ryzen 7 5700X Especificaciones Técnicas
+--------------------------------------------
+
+Arquitectura: Zen 3
+Número de Núcleos/Hilos: 8 núcleos / 16 hilos
+Velocidad Base (Base Clock): 3.4 GHz
+Frecuencia Máxima Boost (Max Boost Clock): Hasta 4.6 GHz
+Caché L3: 32 MB
+Socket: AM4
+TDP (Potencia de Diseño Térmico): 65W
+
+Este procesador es excelente para multitarea y productividad gracias a su balance entre rendimiento y eficiencia energética.
