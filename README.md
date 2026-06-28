@@ -108,7 +108,7 @@ mi_proyecto_crew/
 - **zsh** (Aether ejecuta los comandos de sistema en `/bin/zsh`)
 
 **Modelos de Ollama** (descargar con `ollama pull <modelo>`):
-- Texto + razonamiento + tool calling → **`deepseek-r1:14b`**
+- Texto + razonamiento + tool calling → **`gemma4:e4b`**
 - Visión (multimodal) → **`qwen3-vl:8b`**
 
 (ambos configurables en `core/config/settings.py` → `MODELO` y `MODELO_VISION`).
