@@ -12,7 +12,7 @@ from pathlib import Path
 MODO_AUTONOMO   = True
 OLLAMA_HOST     = "http://localhost:11434"
 SEARXNG_URL     = "http://localhost:8081"
-MODELO          = "deepseek-r1:14b" # ← modelo base para tareas de texto puro y tool calling (chat, análisis, etc.)
+MODELO          = "gemma4:e4b" # ← modelo base para tareas de texto puro y tool calling (chat, análisis, etc.)
 TIMEOUT_CMD     = 60
 # Carpeta base de datos del agente (DB, logs, screenshots…).
 # Cambiar SOLO esta ruta reubica toda la data del agente.
@@ -94,7 +94,7 @@ MAX_HISTORIAL = 100000
 # RAM/VRAM y latencia. 16384 ya se usa en el resto del proyecto
 # (builder/error_handler/graph), así que el equipo lo soporta.
 # Bajalo a 8192 si tu equipo va justo de memoria.
-NUM_CTX = 16384
+NUM_CTX = 8192
 
 # Máximo de turnos de conversación a inyectar (RAM → prompt). Subido de 50
 # a 200. Se acota además por presupuesto de caracteres (abajo) para que un
@@ -131,7 +131,7 @@ MAX_TURNOS_CONTEXTO_CHAT = 10
 # entre cada llamada (intent gate, node_text, synthesizer, resúmenes de tools).
 # Valores: "30m", "1h" o "-1" (cargado para siempre). Con recursos de sobra,
 # conviene mantenerlo caliente. Lo consume _llm_chat vía ollama.chat(keep_alive=).
-OLLAMA_KEEP_ALIVE = "30m"
+OLLAMA_KEEP_ALIVE = "-1"
 
 # Opciones de generación que se mergean en CADA llamada a _llm_chat (además de
 # num_ctx). Pensadas para throughput cuando hay GPU/CPU de sobra:
@@ -144,8 +144,8 @@ OLLAMA_KEEP_ALIVE = "30m"
 #   num_thread : hilos de CPU para las capas en CPU. None = auto.
 OLLAMA_GEN_OPTIONS = {
     "num_batch": 512,
-    # "num_gpu": 999,    # ← descomentá para forzar offload total a GPU
-    # "num_thread": 16,  # ← descomentá y ajustá a tus núcleos físicos
+    "num_gpu": 999,      # ← forzar offload total a GPU (3060 12GB)
+    "num_thread": 8,     # ← núcleos físicos (ajustá si tenés más/menos)
 }
 
 # Concurrencia del SERVIDOR ollama (no del cliente). El grafo es SECUENCIAL

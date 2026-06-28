@@ -68,3 +68,4 @@ build/
 crewai-env/
 __pycache__/
 *.pyc
+crewai-env/
