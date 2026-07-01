@@ -108,7 +108,7 @@ mi_proyecto_crew/
 - **zsh** (Aether ejecuta los comandos de sistema en `/bin/zsh`)
 
 **Modelos de Ollama** (descargar con `ollama pull <modelo>`):
-- Texto + razonamiento + tool calling → **`gemma4:e4b`**
+- Texto + razonamiento + tool calling → **`ornith:9b`**
 - Visión (multimodal) → **`qwen3-vl:8b`**
 
 (ambos configurables en `core/config/settings.py` → `MODELO` y `MODELO_VISION`).
@@ -207,7 +207,7 @@ Si un paso marca error_activo:
   (`error_fallback`). Al resolver, **reanuda el plan**.
 
 ### Modelo "thinking"
-`deepseek-r1:14b` separa su razonamiento (`thinking`) de la respuesta final. El
+`ornith:9b` separa su razonamiento (`thinking`) de la respuesta final. El
 chat principal usa el cliente `ollama` en *streaming* (`core/agent/graph_nodes.py`)
 con corte manual de bloques (p.ej. `[/SHELL]`) para no "alucinar" salidas.
 
@@ -292,7 +292,7 @@ terminal y a usar herramientas de Arch (`pacman`/`yay`/`flatpak`, nunca
 
 | Constante | Valor por defecto | Descripción |
 |---|---|---|
-| `MODELO` | `deepseek-r1:14b` | Modelo de texto + tool calling |
+| `MODELO` | `ornith:9b` | Modelo de texto + tool calling |
 | `MODELO_VISION` | `qwen3-vl:8b` | Modelo multimodal para `vision` |
 | `OLLAMA_HOST` | `http://localhost:11434` | Servidor Ollama |
 | `SEARXNG_URL` | `http://localhost:8081` | Motor de búsqueda (fallback a DuckDuckGo) |
