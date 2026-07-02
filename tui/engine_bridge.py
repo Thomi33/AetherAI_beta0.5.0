@@ -97,15 +97,25 @@ def inicializar_motor() -> None:
     Equivalente a AetherService.initialize(), sin threading.Lock:
     la TUI es un solo proceso interactivo, no hay requests concurrentes
     que proteger.
+
+    Usa asegurar_esquema + normalizar_mem para garantizar que "conversacion"
+    y otras claves siempre existan.
     """
     if _motor.inicializado:
         return
 
-    from core.memory.memory_manager import inicializar_db, cargar_memoria
+    from core.memory.memory_manager import asegurar_esquema, cargar_memoria, normalizar_mem
     from core.tools.flatpak_manager import actualizar_flatpaks
 
-    inicializar_db()
-    _motor.mem = cargar_memoria()
+    asegurar_esquema()
+    raw_mem = cargar_memoria()
+    _motor.mem = normalizar_mem(raw_mem)
+
+    # Sesión única por ejecución de la TUI (igual que tui_main.py)
+    import uuid
+    if not _motor.mem.get("sesion_id"):
+        _motor.mem["sesion_id"] = uuid.uuid4().hex
+
     actualizar_flatpaks(_motor.mem, salida_lista="")
     _motor.inicializado = True
 

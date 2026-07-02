@@ -44,7 +44,8 @@ def node_context_manager(state: AetherState) -> dict:
             mem["core"]["tema_activo"] = tema
 
     # ── Construir slots de contexto ───────────────────────────────────
-    contexto = construir_contexto_memoria(mem, tema=tema)
+    sesion_id = state.get("sesion_id", "")
+    contexto = construir_contexto_memoria(mem, tema=tema, sesion_id=sesion_id)
 
     context_slots = {
         "tema":    tema,
@@ -53,7 +54,7 @@ def node_context_manager(state: AetherState) -> dict:
     }
 
     # ── Generar context dump (debug) ──────────────────────────────────
-    dump = construir_context_dump(mem, tema=tema)
+    dump = construir_context_dump(mem, tema=tema, sesion_id=sesion_id)
     print(f"\n{dump}")
 
     return {

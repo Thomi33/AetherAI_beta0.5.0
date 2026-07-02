@@ -1,0 +1,52 @@
+{
+  "_comentario": "Keywords editables para _detectar_intent_keywords en graph_nodes.py. Editar este archivo no requiere tocar código Python. Las listas multi-palabra ('tu memoria') matchean por substring; las de una sola palabra ('ejecuta') matchean por límite de palabra (\\b) para evitar falsos positivos tipo 'ejecutálo' conteniendo 'ejecuta'.",
+
+  "web": [
+    "busca", "buscar", "qué es", "que es", "cómo funciona", "como funciona",
+    "cuál es", "cual es", "cuánto", "cuanto", "versión", "version",
+    "última versión", "ultima version", "noticias", "noticia", "novedades",
+    "precio", "investiga", "wikipedia", "actualmente", "hoy", "reciente",
+    "último", "ultimo", "última", "ultima", "encuentra información",
+    "qué dice", "que dice", "qué pasó", "que paso", "qué ha pasado",
+    "que ha pasado", "qué hay de nuevo", "que hay de nuevo", "clima", "tiempo"
+  ],
+
+  "vision": [
+    "screenshot", "captura de pantalla", "captura la pantalla",
+    "qué ves en", "que ves en", "qué contenido hay", "que contenido hay",
+    "mira mi pantalla", "mira la pantalla", "observa mi pantalla",
+    "observa la pantalla", "qué hay en pantalla", "que hay en pantalla",
+    "en mi pantalla", "en la pantalla"
+  ],
+
+  "launch": ["ejecuta", "abre", "lanza", "inicia", "corre"],
+
+  "launch_excluye": [
+    "comando", "script", "caché", "cache", "limpiar", "liberar",
+    "instalar", "desinstalar", "actualizar", "configurar", "archivo",
+    "código", "codigo", "función", "funcion"
+  ],
+
+  "memory": [
+    "muéstrame tu memoria", "tu memoria", "mi memoria", "qué recuerdas",
+    "que recuerdas", "ver memoria", "mostrar memoria", "qué sabes de mí",
+    "que sabes de mi", "qué tienes guardado", "que tienes guardado",
+    "qué guardaste", "que guardaste",
+    "borra la conversación", "limpia la memoria conversacional",
+    "olvida la conversación", "borra los flatpaks", "olvida los flatpaks",
+    "actualiza flatpaks", "mi nombre es", "años",
+    "recuerda que", "anota que", "guarda que"
+  ],
+
+  "anaforico": [
+    "ejecutalo", "ejecútalo", "ejecutalo ya", "hacelo", "hazlo",
+    "dale", "adelante", "andá", "anda", "andale", "andalo",
+    "corre eso", "corré eso", "eso mismo", "lo mismo de antes",
+    "el mismo", "el de antes", "ese comando", "ese mismo comando",
+    "hace eso", "haz eso", "si, ejecutalo", "sí, ejecutalo",
+    "confirmado", "confirmo", "procedé", "procede", "dale nomas",
+    "dale nomás", "ok ejecutalo", "ok hazlo",
+    "guardalo", "guárdalo", "guardálo", "mandalo", "mandáselo", "mandaselo",
+    "usalo", "usálo", "aplicálo", "lo de antes"
+  ]
+}

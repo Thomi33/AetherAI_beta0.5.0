@@ -63,10 +63,18 @@ def test_multitool_usa_llm_y_valida():
     ]
     original = gn._planner_llm
     gn._planner_llm = lambda orden, mem: plan_falso
+    # Parcheamos el confirmador anafórico para que no secuestre la orden
+    # multi (que contiene "guárdalo" que ahora está en keywords anaforico).
+    orig_confirm = gn._confirmar_referencia_anaforica_llm
+    gn._confirmar_referencia_anaforica_llm = lambda orden: False
     try:
-        out = _plan("busca el precio de bitcoin y guárdalo en un archivo")
+        # Usamos conector sin palabras de persistencia para que llegue al
+        # camino de _planner_llm (el shortcut de persistencia devolvería plan
+        # determinista sin consultar el mock).
+        out = _plan("busca el precio de bitcoin y luego captura la pantalla")
     finally:
         gn._planner_llm = original
+        gn._confirmar_referencia_anaforica_llm = orig_confirm
 
     assert len(out["plan_pasos"]) == 2
     assert out["plan_pasos"][0]["tool"] == "web"
@@ -78,10 +86,15 @@ def test_multitool_llm_invalido_cae_a_fallback():
     plan_invalido = [{"tool": "inexistente", "instruccion": "x"}]
     original = gn._planner_llm
     gn._planner_llm = lambda orden, mem: plan_invalido
+    # Parcheamos confirm anafórico (la frase contiene "guárdalo").
+    orig_confirm = gn._confirmar_referencia_anaforica_llm
+    gn._confirmar_referencia_anaforica_llm = lambda orden: False
     try:
-        out = _plan("busca algo y guárdalo en archivo")
+        # Orden multi sin keywords de persistencia para forzar camino LLM.
+        out = _plan("busca algo y luego captura la pantalla")
     finally:
         gn._planner_llm = original
+        gn._confirmar_referencia_anaforica_llm = orig_confirm
 
     # Cae a fallback: 1 paso, tool válida (web por keyword 'busca')
     assert len(out["plan_pasos"]) == 1

@@ -1,36 +1,21 @@
 """
-widgets.py — Widgets de la TUI de Aether.
+widgets.py — Widgets de la TUI de Aether (rediseño profesional).
 
-PlanPanel: lista de pasos del plan actual, con marcador de estado por paso
-           (pendiente / en curso / hecho / error). Se llena leyendo
-           plan_pasos / plan_index del delta de estado que llega vía
-           NodeUpdateEvent("planner", {...}).
-
-ProgressLog: log de líneas crudas capturadas de stdout (los print() que ya
-             existen en graph_nodes.py), con un mínimo de color por prefijo
-             conocido (🔧, 🔮, ⚠️, ❌) para que no sea texto plano gris.
+PlanPanel: sidebar colapsable. Muestra plan compacto.
+El grueso de la actividad (tools, resultados) va al chat como eventos modernos.
 """
 
 from __future__ import annotations
 
-from textual.widgets import Static, RichLog
+from textual.widgets import Static
 from textual.containers import Vertical
 from rich.text import Text
 
 
 _ICONOS_TOOL = {
     "text": "💬", "web": "🔍", "shell": "🖥️", "launch": "🚀",
-    "vision": "👁️", "codigo": "💻", "memory": "🧩", "file_write": "💾",
+    "vision": "👁️", "codigo": "💻", "memory": "🧩", "file_write": "💾", "mcp": "🔌",
 }
-
-# Prefijos conocidos de los print() en graph_nodes.py → color rich
-_ESTILO_LOG = (
-    ("❌", "bold red"),
-    ("⚠️", "bold yellow"),
-    ("🔮", "bold magenta"),
-    ("🔧", "bold cyan"),
-    ("✅", "bold green"),
-)
 
 
 class PlanPanel(Vertical):
@@ -48,11 +33,15 @@ class PlanPanel(Vertical):
         self.plan_activo: bool = False
 
     def compose(self):
-        yield Static("[b]PLAN[/b]", id="plan-title")
-        yield Static("Sin plan activo.", id="plan-body")
+        yield Static("[b dim]PLAN[/b dim]", id="plan-title")
+        yield Static("[dim]—[/dim]", id="plan-body")
 
     def on_mount(self) -> None:
-        self._repintar()
+        try:
+            body = self.query_one("#plan-body", Static)
+            body.update("—")
+        except Exception:
+            pass
 
     def actualizar(self, plan_pasos: list[dict], plan_index: int, plan_activo: bool) -> None:
         self.plan_pasos = plan_pasos
@@ -69,27 +58,21 @@ class PlanPanel(Vertical):
     def _repintar(self) -> None:
         body = self.query_one("#plan-body", Static)
         if not self.plan_pasos:
-            body.update("Sin plan activo." if not self.plan_activo else "Planificando...")
+            body.update("—" if not self.plan_activo else "planificando...")
             return
 
         lineas = []
         for i, paso in enumerate(self.plan_pasos):
             tool = paso.get("tool", "?") if isinstance(paso, dict) else "?"
             icono = _ICONOS_TOOL.get(tool, "•")
-            instruccion = ""
-            if isinstance(paso, dict):
-                instruccion = (paso.get("instruccion") or "")[:40]
 
             if i < self.plan_index:
-                marcador, estilo = "✅", "dim"
+                linea = f"[dim]✓ {icono} {tool}[/dim]"
             elif i == self.plan_index and self.plan_activo:
-                marcador, estilo = "▶", "bold yellow"
+                linea = f"[bold yellow]▶ {icono} {tool}[/bold yellow]"
             else:
-                marcador, estilo = "○", "dim"
+                linea = f"[dim]  {icono} {tool}[/dim]"
 
-            linea = f"[{estilo}]{marcador} {icono} {i + 1}. {tool}[/{estilo}]"
-            if instruccion:
-                linea += f"\n   [dim]{instruccion}[/dim]"
             lineas.append(linea)
 
         body.update("\n".join(lineas))
@@ -98,25 +81,5 @@ class PlanPanel(Vertical):
         self.plan_pasos = []
         self.plan_index = 0
         self.plan_activo = False
-        self._repintar()
-
-
-class ProgressLog(RichLog):
-    """
-    Log de progreso: una línea por cada print() capturado de stdout
-    (graph_nodes.py ya los emite, solo los coloreamos por prefijo).
-    """
-
-    def __init__(self, **kwargs):
-        super().__init__(wrap=True, markup=False, highlight=False, **kwargs)
-
-    def agregar_linea(self, texto: str) -> None:
-        estilo = None
-        for prefijo, est in _ESTILO_LOG:
-            if prefijo in texto:
-                estilo = est
-                break
-        if estilo:
-            self.write(Text(texto, style=estilo))
-        else:
-            self.write(Text(texto, style="dim"))
+        body = self.query_one("#plan-body", Static)
+        body.update("—")

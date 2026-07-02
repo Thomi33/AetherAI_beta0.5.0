@@ -86,7 +86,8 @@ def construir_contexto_memoria(mem: dict, tema: str = "", sesion_id: str = "") -
         turnos_relevantes = []
 
     if tema:
-        turnos_relevantes = obtener_turnos_por_tema(tema, limit=MAX_TURNOS_TEMA)
+        
+        turnos_relevantes = obtener_turnos_por_tema(tema, sesion_id=sesion_id, limit=MAX_TURNOS_TEMA)
 
     if not turnos_relevantes:
         # Usar sesion_id explícito, o fallback al último de la RAM
@@ -138,7 +139,7 @@ def construir_contexto_memoria(mem: dict, tema: str = "", sesion_id: str = "") -
     return "\n\n".join(partes)
 
 
-def construir_context_dump(mem: dict, tema: str = "") -> str:
+def construir_context_dump(mem: dict, tema: str = "", sesion_id: str = "") -> str:
     """
     Genera un log legible de qué información entra al modelo y qué se descarta.
     Llamar antes de cada inferencia para facilitar el debug.
@@ -158,8 +159,9 @@ def construir_context_dump(mem: dict, tema: str = "") -> str:
     recuerdos_count = len(
         obtener_recuerdos(categoria=tema if tema else None, importancia_min=1, limit=MAX_RECUERDOS)
     )
-    turnos_tema = obtener_turnos_por_tema(tema, limit=MAX_TURNOS_TEMA) if tema else []
-
+    turnos_tema = obtener_turnos_por_tema(tema, sesion_id=sesion_id, limit=MAX_TURNOS_TEMA) if tema else []
+    turnos_relevantes = obtener_turnos_por_tema(tema, sesion_id=sesion_id, limit=MAX_TURNOS_TEMA)
+    
     slots_activos = ["SISTEMA"]
     if recuerdos_count:
         slots_activos.append("RECUERDOS")
@@ -169,7 +171,7 @@ def construir_context_dump(mem: dict, tema: str = "") -> str:
         slots_activos.append("COMANDOS RECIENTES")
 
     lineas = [
-        "=== CONTEXT DUMP ===",
+        "=== DEBUG: CONTEXT DUMP ===",
         f"Tema:              {tema or '(sin tema)'}",
         f"Core memory:       {len(core)} claves",
         f"Slots activos:     {', '.join(slots_activos)}",

@@ -83,7 +83,7 @@ def test_planner_propaga_mem_normalizada():
     # PROBLEMA 1: aunque mem venga vacío, el planner lo normaliza y propaga
     upd = node_planner({"orden": "hola", "mem": {}})
     assert "mem" in upd
-    for clave in ("preferencias", "flatpaks", "historial_comandos", "conversacion"):
+    for clave in ("conversacion", "historial_comandos", "core", "sesion_id"):
         assert clave in upd["mem"]
 
 
@@ -91,7 +91,7 @@ def test_planner_propaga_mem_normalizada():
 # PROBLEMA 2 — multi-tool: el planner activa un plan de >1 paso
 # ──────────────────────────────────────────────────────────────────────
 
-_ORDEN_MULTI = "busca el precio de bitcoin y guarda el resultado en un archivo"
+_ORDEN_MULTI = "busca el precio de bitcoin y luego captura la pantalla"
 
 
 def test_orden_parece_multitool():
@@ -197,6 +197,119 @@ def test_extraer_json_objeto_balanceado():
 
 def test_extraer_json_objeto_sin_json():
     assert _extraer_json_objeto("no hay json aquí") is None
+
+
+# ═════════════════════════════════════════════════════════════════════
+# ANAFÓRICA (CASO 0 refactor) — tests de las dos etapas + generalización
+# Se mockean _confirmar y/o _llm_chat + se arma mem con historial.
+# ═════════════════════════════════════════════════════════════════════
+
+def _mk_mem_con_turno(rol="jarvis", texto="", tema="shell", sesion_id="s1"):
+    return {
+        "conversacion": [
+            {"rol": rol, "texto": texto, "tema": tema, "sesion_id": sesion_id, "fecha": "2026-01-01"}
+        ],
+        "sesion_id": sesion_id,
+        "preferencias": {},
+        "flatpaks": [],
+        "historial_comandos": [],
+        "core": {},
+    }
+
+
+def test_posible_referencia_detecta_keywords():
+    assert gn._posible_referencia_anaforica("ejecutalo") is True
+    assert gn._posible_referencia_anaforica("Dale") is True
+    assert gn._posible_referencia_anaforica("hacélo de nuevo") is True
+    assert gn._posible_referencia_anaforica("guardalo") is True
+    # no debe activar en órdenes normales
+    assert gn._posible_referencia_anaforica("abre firefox") is False
+    assert gn._posible_referencia_anaforica("busca el precio") is False
+
+
+def test_confirmar_llm_fewshot_ejecutalo_si():
+    # Mockeamos _llm_chat dentro del módulo para que _confirmar responda 'si'
+    with _patch(gn, "_llm_chat", lambda system, user, on_token=None: "si"):
+        assert gn._confirmar_referencia_anaforica_llm("ejecutalo") is True
+        assert gn._confirmar_referencia_anaforica_llm("dale nomás") is True
+
+
+def test_confirmar_llm_fewshot_autosuficiente_no():
+    with _patch(gn, "_llm_chat", lambda system, user, on_token=None: "no"):
+        # El caso clásico que rompía keywords puros
+        assert gn._confirmar_referencia_anaforica_llm(
+            "Buscá el comando para limpiar la caché de pip y ejecutálo"
+        ) is False
+        assert gn._confirmar_referencia_anaforica_llm(
+            "dale doble click al ícono de la papelera"
+        ) is False
+
+
+def test_planner_anaf_ejecutalo_resuelve_shell_directo():
+    # Caso feliz: "ejecutalo" + antecedente con [SHELL] → usa args["command"] sin LLM
+    mem = _mk_mem_con_turno(
+        texto="Listo, podés correr `[SHELL]pip cache purge[/SHELL]` para limpiar.",
+        tema="shell",
+    )
+    with _patch(gn, "_confirmar_referencia_anaforica_llm", lambda orden: True):
+        upd = node_planner({"orden": "ejecutalo", "mem": mem, "sesion_id": "s1"})
+    assert upd["plan_activo"] is True
+    assert len(upd["plan_pasos"]) == 1
+    paso = upd["plan_pasos"][0]
+    assert paso["tool"] == "shell"
+    assert paso["args"]["command"] == "pip cache purge"
+
+
+def test_planner_anaf_sin_antecedente_pide_aclaracion():
+    # "dale" pero último turno de Aether no proponía nada ejecutable
+    mem = _mk_mem_con_turno(texto="No tengo nada que ejecutar ahora mismo.", tema="text")
+    with _patch(gn, "_confirmar_referencia_anaforica_llm", lambda orden: True):
+        upd = node_planner({"orden": "dale", "mem": mem, "sesion_id": "s1"})
+    assert upd.get("plan_activo") is False
+    assert "final_response" in upd
+    assert "con qué exactamente" in (upd.get("final_response") or "").lower()
+
+
+def test_planner_anaf_autosuficiente_con_keyword_no_toma_rama_anaf():
+    # El bug histórico: contiene "ejecutálo" pero la orden es completa → no anaf
+    mem = _mk_mem_con_turno(texto="nada relevante", tema="web")
+    with _patch(gn, "_confirmar_referencia_anaforica_llm", lambda orden: False):
+        # No debe tomar la rama anaf aunque el posible diera true
+        upd = node_planner({
+            "orden": "Buscá el comando para limpiar la caché de pip y ejecutálo",
+            "mem": mem,
+            "sesion_id": "s1"
+        })
+    # Como no es anaf (confirm=false), debe caer a keyword (web por "buscá")
+    assert upd["plan_activo"] is True
+    assert len(upd["plan_pasos"]) == 1
+    # 'buscá' → web (launch_excluye no aplica aquí)
+    assert upd["plan_pasos"][0]["tool"] in ("web", "shell", "text")
+
+
+def test_planner_anaf_generalizado_guardalo_filewrite_prefill():
+    # Generalización: "guardalo" ref a web previo → plan file_write con prefill
+    mem = _mk_mem_con_turno(
+        texto="El precio del BTC es aproximadamente 67000 USD según fuentes recientes.",
+        tema="web",
+    )
+    with _patch(gn, "_confirmar_referencia_anaforica_llm", lambda o: True):
+        upd = node_planner({"orden": "guardalo en btc.txt", "mem": mem, "sesion_id": "s1"})
+    assert upd["plan_activo"] is True
+    assert len(upd["plan_pasos"]) == 1
+    assert upd["plan_pasos"][0]["tool"] == "file_write"
+    assert "plan_resultados" in upd
+    assert "67000" in str(upd.get("plan_resultados", [""])[0])
+
+
+def test_planner_anaf_mandaselo_sin_detalle_text_o_aclaracion():
+    # "mandaselo" sin decir qué ni a quién → si hay payload pero no command específico,
+    # vamos a text (o aclaración si no hay last_texto usable). Aquí hay last → text.
+    mem = _mk_mem_con_turno(texto="Encontré el archivo foo.log.", tema="web")
+    with _patch(gn, "_confirmar_referencia_anaforica_llm", lambda o: True):
+        upd = node_planner({"orden": "mandaselo", "mem": mem, "sesion_id": "s1"})
+    assert upd["plan_activo"] is True
+    assert upd["plan_pasos"][0]["tool"] == "text"
 
 
 if __name__ == "__main__":

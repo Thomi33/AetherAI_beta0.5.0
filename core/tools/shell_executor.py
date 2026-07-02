@@ -69,25 +69,53 @@ def ejecutar_comando(cmd: str) -> tuple[str, bool]:
             )
             return error_sistema, True
 
-    es_gui = bool(_LANZADORES_GUI.search(cmd))
+    cmd_limpio = cmd.strip()
+
+    # No tratar como lanzamiento GUI las consultas de descubrimiento (which, command -v, etc.)
+    # Esto evita que "which prismlauncher" o "command -v xxx" se confundan con lanzar el programa.
+    if re.search(r'^\s*(which|command\s+-v|command\s+-V|type\s+-p|whereis)\b', cmd_limpio, re.IGNORECASE):
+        es_gui = False
+    else:
+        es_gui = bool(_LANZADORES_GUI.search(cmd_limpio))
 
     try:
         # 3. Lógica para aplicaciones GUI (Lanzamiento seguro en segundo plano)
         if es_gui:
+            # Detectamos si el comando está diseñado para capturar PID de background (launch path)
+            wants_pid_capture = "echo $!" in cmd or "& echo" in cmd or "echo $!" in cmd_limpio
+
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".jarvis_err")
+            stdout_target = subprocess.PIPE if wants_pid_capture else subprocess.DEVNULL
             proc = subprocess.Popen(
                 cmd, shell=True, executable="/bin/zsh",
-                stdout=subprocess.DEVNULL, stderr=tmp,
+                stdout=stdout_target, stderr=tmp,
                 preexec_fn=os.setpgrp,
             )
             tmp.close()
+
+            if wants_pid_capture:
+                # Para lanzamientos con `foo > /dev/null & echo $!`, leemos el PID que imprimió el shell
+                try:
+                    out, _ = proc.communicate(timeout=3)
+                    pid_output = (out or b"").decode(errors="ignore").strip()
+                    for tok in reversed(pid_output.split()):
+                        if tok.isdigit():
+                            if os.path.exists(tmp.name):
+                                os.unlink(tmp.name)
+                            return tok, False
+                except Exception:
+                    pass
+                # Si no pudimos obtener el PID del echo, caemos al comportamiento normal
+
             time.sleep(1.5)
             if proc.poll() is not None and proc.returncode != 0:
                 with open(tmp.name) as f:
                     err = f.read().strip()
-                os.unlink(tmp.name)
+                if os.path.exists(tmp.name):
+                    os.unlink(tmp.name)
                 return f"El proceso terminó con error:\n{err}", True
-            os.unlink(tmp.name)
+            if os.path.exists(tmp.name):
+                os.unlink(tmp.name)
             return f"[Proceso lanzado en segundo plano. PID: {proc.pid}]", False
 
         # 4. Lógica para comandos estándar interactivos

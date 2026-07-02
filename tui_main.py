@@ -1,6 +1,16 @@
 #!/usr/bin/env python3
 """
-tui_main.py — Punto de entrada TUI con generación automática de sesión.
+tui_main.py — Punto de entrada principal de Aether (recomendado).
+
+Uso:
+    cd /home/thomi/mi_proyecto_crew
+    source env/bin/activate
+    python tui_main.py
+
+Este es el camino moderno y estable. 
+- Siempre usa razonamiento del modelo (Ornith) para decidir tool (incluyendo launch para programas/flatpaks/juegos).
+- Sin modo legacy.
+- Soporte mejorado para launch (flatpak apps como Sober).
 """
 import sys
 import uuid

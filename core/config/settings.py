@@ -12,11 +12,20 @@ from pathlib import Path
 MODO_AUTONOMO   = True
 OLLAMA_HOST     = "http://localhost:11434"
 SEARXNG_URL     = "http://localhost:8081"
-MODELO          = "gemma4:e4b" # ← modelo base para tareas de texto puro y tool calling (chat, análisis, etc.)
+MODELO          = "ornith:9b" # ← Ornith-1.0-9B (DeepReinforce)
+
+# === Minimal optional instrumentation for AetherBench ===
+# Set AETHER_BENCH_INSTRUMENT=1 before importing to enable metrics logging
+# to ~/.aether/bench_metrics.jsonl (does not affect normal operation).
+# Ornith-native behavior (reasoning-based intent detection, <think> parsing,
+# recommended sampling) is now always enabled. No legacy mode.
+BENCH_INSTRUMENT = os.environ.get("AETHER_BENCH_INSTRUMENT", "0") == "1"
+BENCH_LOG_PATH = Path.home() / ".aether" / "bench_metrics.jsonl"
+BENCH_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
 TIMEOUT_CMD     = 60
 # Carpeta base de datos del agente (DB, logs, screenshots…).
 # Cambiar SOLO esta ruta reubica toda la data del agente.
-BASE_AETHER     = Path("/mnt/basurero/Aether")
+BASE_AETHER     = Path("/mnt/nvme/Aether")
 
 # ─────────────────────────────────────────────────────────────────────
 # 👁️  MODELO DE VISIÓN
@@ -89,11 +98,11 @@ MAX_HISTORIAL = 100000
 # ─────────────────────────────────────────────────────────────────────
 # 🧠 CONTEXTO CONVERSACIONAL (memoria inyectada en el prompt)
 # ─────────────────────────────────────────────────────────────────────
-# Ventana de contexto del modelo en Ollama. Subirla permite inyectar MÁS
-# turnos de conversación sin exceed_context_size_error, a costa de algo de
-# RAM/VRAM y latencia. 16384 ya se usa en el resto del proyecto
-# (builder/error_handler/graph), así que el equipo lo soporta.
-# Bajalo a 8192 si tu equipo va justo de memoria.
+# Ventana de contexto del modelo en Ollama. 
+# Ornith-1.0: contexto nativo 262144 (256K). 
+# Usamos valor conservador para no agotar VRAM/RAM en inyección de memoria;
+# el template y el modelo manejan bien ventanas grandes si el hardware lo permite.
+# Subir (ej 32768 o más) mejora continuidad de historial.
 NUM_CTX = 8192
 
 # Máximo de turnos de conversación a inyectar (RAM → prompt). Subido de 50
@@ -131,21 +140,24 @@ MAX_TURNOS_CONTEXTO_CHAT = 10
 # entre cada llamada (intent gate, node_text, synthesizer, resúmenes de tools).
 # Valores: "30m", "1h" o "-1" (cargado para siempre). Con recursos de sobra,
 # conviene mantenerlo caliente. Lo consume _llm_chat vía ollama.chat(keep_alive=).
-OLLAMA_KEEP_ALIVE = "-1"
+OLLAMA_KEEP_ALIVE = -1   # integer recomendado; evita problemas de parsing de unidades en algunas versiones de Ollama
 
 # Opciones de generación que se mergean en CADA llamada a _llm_chat (además de
-# num_ctx). Pensadas para throughput cuando hay GPU/CPU de sobra:
-#   num_batch  : tokens procesados por lote en el prefill (más alto = prompt
-#                largo más rápido). 512 es un buen punto alto y seguro.
-#   num_gpu    : capas a descargar a GPU. None = auto (ollama mete las que
-#                entren). Poné 999 para FORZAR todas a GPU si tu VRAM da
-#                (máxima velocidad). Si el modelo no entra entero, dejalo en
-#                None o bajá el número.
-#   num_thread : hilos de CPU para las capas en CPU. None = auto.
+# num_ctx). 
+#
+# Ornith-1.0 oficiales (deep-reinforce.com + HF model cards):
+#   Recommended: temperature=0.6, top_p=0.95, top_k=20
+#   Para benchmarks reproducibles: temperature=1.0, top_p=1.0 o 0.95
+# Ajustes para throughput:
+#   num_batch, num_gpu, num_thread como antes.
 OLLAMA_GEN_OPTIONS = {
     "num_batch": 512,
-    "num_gpu": 999,      # ← forzar offload total a GPU (3060 12GB)
-    "num_thread": 8,     # ← núcleos físicos (ajustá si tenés más/menos)
+    "num_gpu": 999,      # ← forzar offload total a GPU
+    "num_thread": 8,
+    # Ornith-native sampling (se mergea en _llm_chat)
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "top_k": 20,
 }
 
 # Concurrencia del SERVIDOR ollama (no del cliente). El grafo es SECUENCIAL

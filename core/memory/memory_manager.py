@@ -230,6 +230,8 @@ def registrar_turno(
     except Exception as e:
         print(f"[MEMORIA] Error registrando turno: {e}")
 
+    if not isinstance(mem.get("conversacion"), list):
+        mem["conversacion"] = []
     mem["conversacion"].append({
         "rol": rol, "texto": texto,
         "fecha": fecha, "sesion_id": sesion_id, "tema": tema,
@@ -319,22 +321,36 @@ def obtener_recuerdos(
 # ══════════════════════════════════════════════════════════════════════
 # RECUPERACIÓN POR RELEVANCIA (para el Context Manager)
 # ══════════════════════════════════════════════════════════════════════
-def obtener_turnos_por_tema(tema: str, limit: int = 10) -> list[dict]:
-    """Recupera turnos anteriores del mismo tema (para contexto relevante)."""
+def obtener_turnos_por_tema(tema: str, sesion_id: str = "", limit: int = 10) -> list[dict]:
+    """
+    Recupera turnos anteriores del mismo tema (para contexto relevante).
+
+    Si se pasa sesion_id, filtra SOLO turnos de esa sesión (evita que
+    contexto de sesiones viejas con el mismo tema contamine la actual).
+    Sin sesion_id, mantiene el comportamiento legacy (busca en todo el historial).
+    """
     try:
         with _db() as con:
-            filas = con.execute("""
-                SELECT fecha, rol, texto, sesion_id
-                FROM conversaciones
-                WHERE tema = ?
-                ORDER BY id DESC
-                LIMIT ?
-            """, (tema, limit)).fetchall()
+            if sesion_id:
+                filas = con.execute("""
+                    SELECT fecha, rol, texto, sesion_id
+                    FROM conversaciones
+                    WHERE tema = ? AND sesion_id = ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                """, (tema, sesion_id, limit)).fetchall()
+            else:
+                filas = con.execute("""
+                    SELECT fecha, rol, texto, sesion_id
+                    FROM conversaciones
+                    WHERE tema = ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                """, (tema, limit)).fetchall()
             return [dict(f) for f in reversed(filas)]
     except Exception as e:
         print(f"[MEMORIA] Error buscando turnos por tema: {e}")
         return []
-
 
 def obtener_turnos_por_sesion(sesion_id: str) -> list[dict]:
     """Recupera todos los turnos de una sesión específica."""
@@ -380,3 +396,11 @@ def guardar_memoria(mem: dict) -> None:
     """
     # Intencionalmente vacío: la persistencia ya es inmediata.
     return None
+
+
+# ══════════════════════════════════════════════════════════════════════
+# COMPATIBILIDAD LEGACY (para engine_bridge, backend, etc.)
+# ══════════════════════════════════════════════════════════════════════
+def inicializar_db() -> None:
+    """Alias de compatibilidad. Llama a asegurar_esquema()."""
+    asegurar_esquema()
