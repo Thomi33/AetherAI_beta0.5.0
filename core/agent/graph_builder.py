@@ -38,7 +38,7 @@ from core.agent.node_context_manager import node_context_manager
 # CONDICIONALES
 # ══════════════════════════════════════════════════════════════════════
 
-_TOOLS_CON_RESUMEN = frozenset({"shell", "codigo", "file_write", "web", "vision"})  # launch goes direct to finalize so we can report PID cleanly
+_TOOLS_CON_RESUMEN = frozenset({"shell", "codigo", "file_write", "web", "vision", "mcp"})  # launch goes direct to finalize so we can report PID cleanly
 
 
 def _destino_post_plan(state: AetherState) -> str:

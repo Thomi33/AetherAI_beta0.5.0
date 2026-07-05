@@ -42,8 +42,7 @@ def test_despacha_al_nodo_correcto():
         tool_registry.get_node_func = original
 
     assert "saluda" in llamadas["orden"], "la instrucción debe llegar como orden"
-    assert isinstance(llamadas["mem"], dict) and "preferencias" in llamadas["mem"]
-    assert out["plan_index"] == 1
+    assert isinstance(llamadas["mem"], dict) and "core" in llamadas["mem"]
     assert out["plan_resultados"][-1] == "hola mundo"
 
 

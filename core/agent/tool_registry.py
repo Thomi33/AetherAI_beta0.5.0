@@ -86,6 +86,15 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
             "búsqueda, HTML sin decodificar y relleno conversacional)."
         ),
     },
+    "mcp": {
+        "node": "node_mcp",
+        "instruccion_requerida": True,
+        "descripcion": (
+            "Invocar una tool de un servidor MCP externo conectado. "
+            "El paso debe traer args={'server': <nombre>, 'name': <tool>, "
+            "'arguments': {...}} identificando qué servidor y qué tool MCP usar."
+        ),
+    },
   }
 
 

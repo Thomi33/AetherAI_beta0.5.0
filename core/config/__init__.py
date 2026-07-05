@@ -13,6 +13,9 @@ from .settings import (
     MAX_HISTORIAL,
 )
 
+# Config Manager export
+from .config_manager import ConfigManager, get_config_manager, reset_config_manager
+
 __all__ = [
     "MODO_AUTONOMO",
     "OLLAMA_HOST",
@@ -26,4 +29,7 @@ __all__ = [
     "RUTA_EMBEDDINGS",
     "RUTA_BACKUPS",
     "MAX_HISTORIAL",
+    "ConfigManager",
+    "get_config_manager",
+    "reset_config_manager",
 ]

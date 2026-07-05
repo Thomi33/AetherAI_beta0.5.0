@@ -1,29 +1,31 @@
 """
 app.py — TUI principal de Aether (Textual).
 
-Rediseño mayor (inspirado en OpenCode / Claude Code pero manteniendo identidad terminal de Aether):
-- Header inteligente con estado del modelo, thinking, contexto, tools (siempre visible).
-- Barra inferior con uso de contexto (barra visual) + atajos reales.
-- Chat como protagonista: tool calls compactos y legibles (estilo Claude).
-- Sidebar colapsable (Ctrl+B) con Plan + preview de Tools/MCP.
-- Config en caliente (F2): presets de reasoning (OFF/Fast/Balanced/Deep/Extreme), modelo, etc.
-- Menos ruido: se eliminó "Intención decidida..." por defecto.
-- Estados visuales discretos (● Thinking etc.).
-- Preparada para MCP y crecimiento (paneles modulares).
+Rediseño v2 (estilo Claude Code / OpenCode):
+- Un solo acento de color; todo lo demás en gris/blanco sobre negro puro.
+- Header de una sola línea, sin bordes pesados.
+- Chat es el único protagonista: transcript continuo con marcadores tipográficos
+  unificados (›, ●, ⎿, ✗) en vez de emojis mezclados con colores random.
+- Sidebar (Plan/Tools) oculta por defecto, se muestra con Ctrl+B.
+- F2 abre ConfigScreen (modal real, ya implementado en widgets/config.py) en vez
+  de volcar texto con markup roto al chat log.
 
-Todo el progreso sigue llegando por engine_bridge.iter_eventos() (sin romper bridge).
+Todo el progreso sigue llegando por engine_bridge.iter_eventos() (bridge intacto).
 """
 
 from __future__ import annotations
 
+import re
+
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Header, Footer, Input, RichLog, Static
-from textual.worker import Worker, WorkerState
 from rich.text import Text
 
 from .widgets import PlanPanel
+from .widgets.config import ConfigScreen
 from . import engine_bridge as bridge
+from core.config.config_manager import get_config_manager
 
 
 PALABRAS_SALIDA = {"salir", "adios", "exit", "apágate", "apagate", "quit"}
@@ -32,36 +34,39 @@ PALABRAS_SALIDA = {"salir", "adios", "exit", "apágate", "apagate", "quit"}
 class AetherApp(App):
     """App principal de la TUI de Aether."""
 
+    # Un solo acento (definido por el theme de Textual vía $accent).
+    # Todo lo demás usa $text / $text-muted — nada de rainbow de colores.
     CSS = """
     Screen {
         layout: vertical;
+        background: $background;
     }
 
     #top-bar {
         dock: top;
-        height: 3;                  /* header inteligente multi-linea */
-        background: $boost;
-        color: $text;
+        height: 1;
+        background: $background;
+        color: $text-muted;
         padding: 0 1;
-        border-bottom: solid $accent;
     }
 
-    /* Colores sobrios (punto 11): gris/azul/cian/verde. Amarillo/rojo solo alertas */
-    .tool-call { color: $accent; }
-    .success { color: $success; }
-    .warning { color: $warning; }  /* amarillo solo advertencias */
-    .error { color: $error; }      /* rojo solo errores */
+    #top-bar .accent {
+        color: $accent;
+    }
 
     #cuerpo {
         height: 1fr;
     }
 
+    /* Sidebar: oculta por defecto (Ctrl+B). Sin panel pesado, solo un borde
+       izquierdo fino para separar del chat cuando está visible. */
     #sidebar {
-        width: 28;
-        border: round $accent;
+        width: 26;
+        border-left: solid $panel-lighten-1;
         padding: 0 1;
-        background: $surface;
-        display: none;              /* colapsable por defecto para mas chat */
+        background: $background;
+        display: none;
+        color: $text-muted;
     }
 
     #sidebar.visible {
@@ -70,7 +75,7 @@ class AetherApp(App):
 
     #plan-panel {
         height: auto;
-        max-height: 55%;
+        max-height: 60%;
     }
 
     #chat-wrapper {
@@ -79,29 +84,38 @@ class AetherApp(App):
 
     #chat-log {
         height: 1fr;
-        padding: 0 1;
-        background: $surface;
+        padding: 0 2;
+        background: $background;
     }
 
     #chat-streaming {
         height: auto;
-        padding: 0 1 1 1;
-        color: $success;
-        text-style: italic;
+        padding: 0 2 1 2;
+        color: $text-muted;
     }
 
     #bottom-bar {
         dock: bottom;
         height: 1;
-        background: $panel;
-        color: $text;
+        background: $background;
+        color: $text-muted;
         padding: 0 1;
-        border-top: solid $accent;
     }
 
     Input {
         dock: bottom;
-        background: $surface;
+        background: $background;
+        border: none;
+        border-top: solid $panel-lighten-1;
+        padding: 0 1;
+    }
+
+    Input:focus {
+        border-top: solid $accent;
+    }
+
+    Footer {
+        background: $background;
     }
     """
 
@@ -117,10 +131,10 @@ class AetherApp(App):
         super().__init__(**kwargs)
         self._procesando = False
         self._buffer_streaming = ""
-        self._sidebar_visible = True  # start visible but can toggle (Ctrl+B)
+        self._sidebar_visible = False  # oculta por defecto — se activa con Ctrl+B
         self._context_used = 0
         self._context_total = 128000
-        # Hot config state (punto 5)
+        self._ultima_orden = ""
         self._settings = {
             "model": "ornith:9b",
             "provider": "Ollama",
@@ -136,75 +150,85 @@ class AetherApp(App):
     # ──────────────────────────────────────────────────────────────
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=True)
-
-        # Header inteligente (punto 3) - info útil, no redundante
+        yield Header(show_clock=False)
         yield Static("", id="top-bar", markup=True)
 
         with Horizontal(id="cuerpo"):
-            # Panel lateral colapsable (punto 13)
             with Vertical(id="sidebar"):
                 yield PlanPanel(id="plan-panel")
-                # Placeholder para Tools / MCP preview (puntos 17,18)
-                yield Static("[dim]Tools: [green]✓[/] Shell Web Launch\n[dim]MCP: 0/0[/]", id="tools-preview")
+                yield Static("", id="tools-preview", markup=True)
 
             with Vertical(id="chat-wrapper"):
                 yield RichLog(id="chat-log", markup=True, wrap=True)
                 yield Static("", id="chat-streaming", markup=False)
 
-        # Barra inferior útil (punto 10) + contexto (punto 4)
         yield Static("", id="bottom-bar", markup=True)
-
-        yield Input(placeholder="¿Qué querés que haga?  (F2 Settings • Ctrl+B Sidebar • Ctrl+L Clear)", id="input-orden")
+        yield Input(
+            placeholder="¿Qué querés que haga?  (F2 Settings · Ctrl+B Sidebar · Ctrl+L Clear)",
+            id="input-orden",
+        )
         yield Footer()
 
     def on_mount(self) -> None:
         self.title = "AETHER"
-        self.sub_title = "Agente local • Ornith + LangGraph"
+        self.sub_title = "Agente local · Ornith + LangGraph"
         self._refresh_top_bar()
         self._refresh_bottom_bar()
+        self._refresh_tools_preview()
+
         chat = self.query_one("#chat-log", RichLog)
-        chat.write(Text("🤖 Aether — listo para trabajar", style="bold cyan"))
+        chat.write(Text("Aether — listo para trabajar", style="bold"))
         chat.write(Text("Escribí cualquier cosa abajo. Uso herramientas cuando hace falta.", style="dim"))
+
         self.run_worker(self._inicializar_motor, thread=True, exclusive=True, name="init")
 
     # ──────────────────────────────────────────────────────────────
-    # ESTADO / HEADER
+    # HEADER / BOTTOM BAR (una sola línea cada uno, sin ruido)
     # ──────────────────────────────────────────────────────────────
 
     def _refresh_top_bar(self) -> None:
-        """Header inteligente (punto 3) - datos útiles, siempre visibles (punto 7)."""
         bar = self.query_one("#top-bar", Static)
         s = self._settings
         ctx_pct = int((self._context_used / self._context_total) * 100) if self._context_total else 0
+        thinking = "on" if s["thinking"] == "ON" else "off"
+        tools = "on" if s["tools_enabled"] else "off"
         text = (
-            f"[bold]AETHER[/]  "
-            f"Model: [cyan]{s['model']}[/]  "
-            f"Provider: [blue]{s['provider']}[/]  "
-            f"Thinking: [green]{s['thinking']}[/]  "
-            f"Level: [yellow]{s['reasoning_level']}[/]  "
-            f"Ctx: [magenta]{self._context_used//1000}k/{self._context_total//1000}k[/] ({ctx_pct}%)  "
-            f"Tools: {'[green]on[/]' if s['tools_enabled'] else '[red]off[/]'}  "
-            f"Sesión: [dim]activa[/]"
+            f"[accent]aether[/]  ·  [accent]{s['model']}[/]  ·  "
+            f"thinking:{thinking}  ·  tools:{tools}  ·  "
+            f"ctx {self._context_used // 1000}k/{self._context_total // 1000}k ({ctx_pct}%)"
         )
         bar.update(text)
 
     def _refresh_bottom_bar(self) -> None:
-        """Barra inferior con contexto visual (punto 4) y atajos (punto 10)."""
         bar = self.query_one("#bottom-bar", Static)
         ctx_pct = int((self._context_used / self._context_total) * 100) if self._context_total else 0
-        bar_len = 12
+        bar_len = 16
         filled = int(bar_len * ctx_pct / 100)
         bar_vis = "█" * filled + "░" * (bar_len - filled)
-        bar_text = f"Contexto: {bar_vis} {ctx_pct}%  [dim]│[/] F2 Settings  Ctrl+B Sidebar  Ctrl+L Clear  Ctrl+R Retry"
-        bar.update(bar_text)
+        bar.update(f"{bar_vis} {ctx_pct}%")
 
-    def _set_estado(self, texto: str, icono: str = "●") -> None:
-        # Estado ahora integrado en top-bar y bottom-bar (menos ruido)
+    def _refresh_tools_preview(self) -> None:
+        preview = self.query_one("#tools-preview", Static)
+        preview.update("tools   shell · web · launch\nmcp     0/0")
+
+    def _apply_config_to_settings(self) -> None:
+        """Sincronizar ConfigManager con el estado interno de la TUI (header)."""
+        config = get_config_manager()
+        self._settings["model"] = config.get("MODELO", "ornith:9b")
+        self._settings["provider"] = "Ollama"
+        self._settings["thinking"] = "ON" if config.get("MODO_AUTONOMO", True) else "OFF"
+        self._settings["temp"] = config.get("TEMPERATURE", 0.6)
+        self._settings["max_tokens"] = config.get("MAX_TOKENS", 2048)
+        self._settings["tools_enabled"] = config.get("TOOL_CALLING_NATIVO", True)
+        self._settings["verbose"] = config.get("VERBOSE", False)
+        self._settings["debug"] = config.get("DEBUG", False)
+
+    def _set_estado(self, texto: str, icono: str = "") -> None:
+        # Sin panel de estado separado: el header ya refleja todo.
         self._refresh_top_bar()
 
     # ──────────────────────────────────────────────────────────────
-    # INICIALIZACIÓN (en worker thread, no bloquea la UI)
+    # INICIALIZACIÓN (worker thread, no bloquea la UI)
     # ──────────────────────────────────────────────────────────────
 
     def _inicializar_motor(self) -> None:
@@ -215,19 +239,16 @@ class AetherApp(App):
             self.call_from_thread(self._on_motor_error, str(e))
 
     def _on_motor_listo(self) -> None:
-        self._set_estado("listo", "●")
+        self._apply_config_to_settings()
         self._refresh_top_bar()
         self._refresh_bottom_bar()
-        sidebar = self.query_one("#sidebar")
         if self._sidebar_visible:
-            sidebar.add_class("visible")
-        self.query_one("#chat-log", RichLog).write(
-            Text("✅ Aether listo. Escribí tu orden abajo.", style="green")
-        )
+            self.query_one("#sidebar").add_class("visible")
+        self.query_one("#chat-log", RichLog).write(Text("listo.", style="dim"))
         self.query_one(Input).focus()
 
     def _on_motor_error(self, mensaje: str) -> None:
-        self._set_estado(f"error de inicialización: {mensaje}", "❌")
+        self.query_one("#chat-log", RichLog).write(Text(f"✗ Error de inicialización: {mensaje}", style="bold red"))
 
     # ──────────────────────────────────────────────────────────────
     # INPUT DEL USUARIO
@@ -244,20 +265,18 @@ class AetherApp(App):
             return
 
         if self._procesando:
-            self.query_one("#chat-log", RichLog).write(
-                Text("⏳ Todavía estoy procesando la orden anterior...", style="yellow")
-            )
+            self.query_one("#chat-log", RichLog).write(Text("todavía estoy procesando la orden anterior...", style="dim"))
             return
 
         chat = self.query_one("#chat-log", RichLog)
-        chat.write(Text(f"\n🧠 Tú: {orden}", style="bold cyan"))
+        chat.write(Text(f"\n› {orden}", style="bold"))
 
         self.query_one(PlanPanel).reset()
         self._buffer_streaming = ""
         self.query_one("#chat-streaming", Static).update("")
 
+        self._ultima_orden = orden
         self._procesando = True
-        self._set_estado("● Thinking", "⚙")
         self._refresh_top_bar()
 
         self.run_worker(
@@ -282,7 +301,6 @@ class AetherApp(App):
         if isinstance(evento, bridge.NodeUpdateEvent):
             delta = evento.delta
 
-            # Actualizar panel lateral compacto (solo plan)
             if "plan_pasos" in delta or "plan_activo" in delta:
                 plan_panel.actualizar(
                     plan_pasos=delta.get("plan_pasos", plan_panel.plan_pasos),
@@ -293,64 +311,40 @@ class AetherApp(App):
                 plan_panel.plan_index = delta["plan_index"]
                 plan_panel._repintar()
 
-            # Mostrar actividad importante directamente en el chat (estilo Claude Code)
             if delta.get("error_activo"):
                 msg = delta.get("error_mensaje", "error")
-                chat.write(Text(f"\n⚠️  [{evento.nodo}] {msg}", style="bold yellow"))
+                chat.write(Text(f"  ⎿ ✗ [{evento.nodo}] {msg}", style="yellow"))
 
         elif isinstance(evento, bridge.StdoutLineEvent):
             texto = evento.texto.strip()
-
-            # Claude-Code style: la mayoría de la actividad se ve en el chat
-            # como si fuera parte natural de la conversación.
-
             if not texto:
                 return
 
-            # Clean internal noise by default (point 1)
-            if "Intención decidida por razonamiento del modelo" in texto:
-                return  # hidden unless debug mode enabled later
-
-            if "🎙️" in texto or texto.startswith("Aether:"):
-                contenido = texto.split("🎙️", 1)[-1].lstrip(" \t:").strip()
-                if contenido:
-                    chat.write(Text(f"\n🎙️  Aether: {contenido}", style="bold green"))
-
-            elif "🚀 [LAUNCH]" in texto or texto.startswith("🚀"):
-                chat.write(Text(f"\n{texto}", style="bold cyan"))
-
-            # Tool calls modernas (punto 9) - compactas y estilo Claude
-            elif "🔧 [" in texto or "[PLAN EXECUTOR]" in texto:
-                clean = texto.replace("🔧 ", "🔧 ").replace("[PLAN EXECUTOR]", "Plan")
-                chat.write(Text(f"\n{clean}", style="dim cyan"))
-            elif "[LAUNCH]" in texto or texto.startswith("🔍 [LAUNCH]"):
-                chat.write(Text(f"\n🚀 {texto.split(']',1)[-1].strip() if ']' in texto else texto}", style="dim"))
-            elif "Lanzado" in texto and "PID" in texto:
-                chat.write(Text(f"   ✔ {texto}", style="green"))
-            elif any(x in texto for x in ["🖥️", "💻", "👁️", "🌐"]):
-                chat.write(Text(f"   {texto}", style="dim"))
-            elif texto.startswith("❌") or "error" in texto.lower():
-                chat.write(Text(f"\n{texto}", style="bold red"))
-            else:
-                chat.write(Text(f"   {texto}", style="dim"))
+            # Defensivo: a veces el motor emite varios mensajes pegados sin
+            # salto de línea real entre ellos (típicamente conexiones MCP
+            # consecutivas, ver captura del 2026-07-05: 4 mensajes "[MCP]:
+            # conectado a server '...'" llegaron como un solo StdoutLineEvent
+            # y el RichLog los wrappeó como un párrafo continuo). No tenemos
+            # graph_nodes.py para arreglar el print() en origen, así que acá
+            # separamos heurísticamente por los marcadores conocidos antes
+            # de renderizar, para que cada mensaje caiga en su propia línea.
+            partes = self._separar_mensajes_pegados(texto)
+            for parte in partes:
+                self._render_linea_stdout(chat, parte)
 
         elif isinstance(evento, bridge.TokenEvent):
-            # Streaming token a token (pensamiento o respuesta en vivo)
             self._buffer_streaming += evento.fragmento
             streaming_widget = self.query_one("#chat-streaming", Static)
-            from rich.text import Text as RichText
-            streaming_widget.update(RichText(self._buffer_streaming, style="italic green"))
+            streaming_widget.update(Text(self._buffer_streaming, style="dim"))
 
         elif isinstance(evento, bridge.DoneEvent):
-            # Volcar lo que quedó del streaming al chat principal
             texto_final = self._buffer_streaming.strip() or evento.respuesta
             if texto_final.startswith("🎙️"):
                 texto_final = texto_final.split(":", 1)[-1].strip()
 
             if texto_final:
-                chat.write(Text(f"\n🎙️  Aether: {texto_final}", style="bold green"))
+                chat.write(Text(f"\n● {texto_final}", style="bold"))
 
-            # Actualizar contexto (punto 4) - heurística simple, real vendría de deltas
             self._context_used = min(self._context_used + 1200, self._context_total)
             self._refresh_top_bar()
             self._refresh_bottom_bar()
@@ -358,14 +352,70 @@ class AetherApp(App):
             self.query_one("#chat-streaming", Static).update("")
             self._buffer_streaming = ""
             self._procesando = False
-            self._set_estado("listo", "●")
 
         elif isinstance(evento, bridge.ErrorEvent):
-            chat.write(Text(f"\n❌ Error: {evento.mensaje}", style="bold red"))
+            chat.write(Text(f"\n✗ Error: {evento.mensaje}", style="bold red"))
             self.query_one("#chat-streaming", Static).update("")
             self._buffer_streaming = ""
             self._procesando = False
-            self._set_estado("listo (con error)", "●")
+
+    def _separar_mensajes_pegados(self, texto: str) -> list[str]:
+        """Divide un string que puede traer varios mensajes concatenados
+        sin separador real (ver captura del 2026-07-05: mensajes de conexión
+        MCP consecutivos llegando como un solo StdoutLineEvent), cortando
+        antes de cada marcador reconocido."""
+        patron = r"(?=\[MCP\]:|\[PLANNER\]:|\[PLAN EXECUTOR\]|🔧 \[|🚀|Intención decidida|\[MEMORIA\]|🎙️|🧠)"
+        partes = [p.strip() for p in re.split(patron, texto) if p.strip()]
+        # Descartar fragmentos que quedan como puro ícono/puntuación suelta
+        # (p. ej. un "🧠" solo, residuo de cortar justo antes del texto real).
+        return [p for p in partes if re.search(r"\w", p)]
+
+    def _render_linea_stdout(self, chat: RichLog, texto: str) -> None:
+        """Renderiza una línea de stdout ya individualizada, con el set
+        único de marcadores tipográficos (sin emojis mezclados con color)."""
+        if not texto:
+            return
+
+        # Ocultar por completo el ruido de conexión MCP (no aporta nada al usuario).
+        if texto.startswith("[MCP]:") or "[MCP]:" in texto:
+            return
+
+        # El motor a veces pega la traza de debug "Intención decidida..."
+        # directamente antes de la respuesta real, sin separador (ver
+        # captura 2026-07-05: "Intención decidida por razonamiento del
+        # modelo: textAether:¡Hola! ..."). Sacamos el ruido de debug; si la
+        # respuesta real vino pegada atrás de un "Aether:", la rescatamos.
+        if "Intención decidida por razonamiento del modelo" in texto:
+            if "Aether:" in texto:
+                contenido = texto.split("Aether:", 1)[-1].strip()
+                if contenido:
+                    chat.write(Text(f"\n● {contenido}", style="bold"))
+            return
+
+        if "🎙️" in texto or texto.startswith("Aether:"):
+            contenido = texto.split("🎙️", 1)[-1].lstrip(" \t:").strip()
+            if contenido:
+                chat.write(Text(f"\n● {contenido}", style="bold"))
+
+        elif texto.startswith("🚀") or "[LAUNCH]" in texto:
+            resumen = texto.split("]", 1)[-1].strip() if "]" in texto else texto
+            chat.write(Text(f"  ⎿ {resumen}", style="dim"))
+
+        elif "[PLAN EXECUTOR]" in texto or "🔧 [" in texto:
+            clean = texto.replace("🔧 ", "").replace("[PLAN EXECUTOR]", "plan")
+            chat.write(Text(f"  ⎿ {clean}", style="dim"))
+
+        elif "Lanzado" in texto and "PID" in texto:
+            chat.write(Text(f"  ⎿ {texto}", style="dim"))
+
+        elif any(x in texto for x in ["🖥️", "💻", "👁️", "🌐"]):
+            chat.write(Text(f"  ⎿ {texto}", style="dim"))
+
+        elif texto.startswith("❌") or "error" in texto.lower():
+            chat.write(Text(f"  ⎿ ✗ {texto.lstrip('❌ ')}", style="bold yellow"))
+
+        else:
+            chat.write(Text(f"  ⎿ {texto}", style="dim"))
 
     # ──────────────────────────────────────────────────────────────
     # ACCIONES
@@ -375,43 +425,51 @@ class AetherApp(App):
         self.exit()
 
     def action_open_settings(self) -> None:
-        """Abre panel de configuración en caliente (punto 5)."""
-        self._open_settings_modal()
+        """F2 → modal real de configuración (ConfigScreen), no texto en el chat."""
+        def _al_cerrar(_resultado=None) -> None:
+            # Al volver del modal, refrescar el header por si cambió el modelo/temp/etc.
+            self._apply_config_to_settings()
+            self._refresh_top_bar()
+
+        self.push_screen(ConfigScreen(), _al_cerrar)
 
     def action_toggle_sidebar(self) -> None:
-        """Toggle panel lateral (punto 13)."""
         sidebar = self.query_one("#sidebar")
         self._sidebar_visible = not self._sidebar_visible
         if self._sidebar_visible:
             sidebar.add_class("visible")
         else:
             sidebar.remove_class("visible")
-        self._refresh_top_bar()  # update if needed
 
     def action_clear_chat(self) -> None:
-        """Limpia el chat (Ctrl+L)."""
         self.query_one("#chat-log", RichLog).clear()
-        self.query_one("#chat-log", RichLog).write(Text("🧹 Chat limpiado.", style="dim"))
+        self.query_one("#chat-log", RichLog).write(Text("chat limpiado.", style="dim"))
 
     def action_retry_last(self) -> None:
-        """Reintentar última orden (Ctrl+R) - placeholder funcional."""
-        # En producción se guardaría la última orden
-        self.query_one("#chat-log", RichLog).write(Text("🔄 Reintentar no implementado aún en este prototipo.", style="yellow"))
+        if not self._ultima_orden:
+            self.query_one("#chat-log", RichLog).write(Text("nada para reintentar todavía.", style="dim"))
+            return
+        if self._procesando:
+            self.query_one("#chat-log", RichLog).write(Text("todavía estoy procesando la orden anterior...", style="dim"))
+            return
 
-    def _open_settings_modal(self):
-        """Modal simple de settings + presets de razonamiento (puntos 5,6)."""
-        # Usamos un screen simple por ahora (puede expandirse a Textual Screen dedicado)
         chat = self.query_one("#chat-log", RichLog)
-        chat.write(Text("\n⚙️  SETTINGS (hot) - Presets de razonamiento:", style="bold cyan"))
-        chat.write(Text("  OFF | Fast | Balanced (actual) | Deep | Extreme", style="dim"))
-        chat.write(Text("  (Escribe el preset o 'close' para cerrar)", style="dim"))
-        # Para real interactividad se implementaría un Input overlay o Screen.
-        # Aquí mostramos la idea y actualizamos estado de ejemplo.
-        self._settings["reasoning_level"] = "Deep"
-        self._settings["thinking"] = "ON"
+        chat.write(Text(f"\n› {self._ultima_orden}  (retry)", style="bold"))
+
+        self.query_one(PlanPanel).reset()
+        self._buffer_streaming = ""
+        self.query_one("#chat-streaming", Static).update("")
+
+        self._procesando = True
         self._refresh_top_bar()
-        self._refresh_bottom_bar()
-        chat.write(Text("   → Nivel cambiado a Deep (demo). Config real persistiría en mem/config.", style="green"))
+
+        orden = self._ultima_orden
+        self.run_worker(
+            lambda: self._procesar_orden(orden),
+            thread=True,
+            exclusive=False,
+            name="orden",
+        )
 
 
 def run() -> None:

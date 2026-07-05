@@ -48,6 +48,9 @@ class AetherState(TypedDict):
     # ── Web ──────────────────────────────────────────────────────────
     web_results:    str           # resultados de buscar_web()
 
+    # ── MCP ──────────────────────────────────────────────────────────
+    mcp_result:     str           # resultado crudo devuelto por node_mcp
+
     # ── Visión ───────────────────────────────────────────────────────
     vision_result:  str           # descripción retornada por ver_pantalla()
 
@@ -138,8 +141,9 @@ def crear_estado_inicial(orden: str, mem: dict, modo_autonomo: bool = True) -> "
         "shell_error":   False,
         "hubo_error":    False,
 
-        # ── Web / Visión / Código ────────────────────────────────────
+        # ── Web / MCP / Visión / Código ──────────────────────────────
         "web_results":      "",
+        "mcp_result":       "",
         "vision_result":    "",
         "_codigo_original": "",
         "_archivo_codigo":  "",

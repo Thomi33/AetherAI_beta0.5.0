@@ -34,7 +34,7 @@ import contextlib
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 
-PROJECT_ROOT_HINT = "Ajustá sys.path en tui_main.py, no aquí."
+PROJECT_ROOT_HINT = "Ajustá sys.path en run.py, no aquí."
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -111,7 +111,7 @@ def inicializar_motor() -> None:
     raw_mem = cargar_memoria()
     _motor.mem = normalizar_mem(raw_mem)
 
-    # Sesión única por ejecución de la TUI (igual que tui_main.py)
+    # Sesión única por ejecución de la TUI
     import uuid
     if not _motor.mem.get("sesion_id"):
         _motor.mem["sesion_id"] = uuid.uuid4().hex

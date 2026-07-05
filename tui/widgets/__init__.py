@@ -1,8 +1,8 @@
 """
-widgets.py — Widgets de la TUI de Aether (rediseño profesional).
+tui/widgets/__init__.py — Widgets de la TUI de Aether.
 
-PlanPanel: sidebar colapsable. Muestra plan compacto.
-El grueso de la actividad (tools, resultados) va al chat como eventos modernos.
+PlanPanel: sidebar colapsable con lista de pasos del plan.
+ConfigPanel: panel interactivo de configuración en caliente.
 """
 
 from __future__ import annotations
@@ -10,6 +10,8 @@ from __future__ import annotations
 from textual.widgets import Static
 from textual.containers import Vertical
 from rich.text import Text
+
+from .config import ConfigPanel, ConfigOption, ConfigSection
 
 
 _ICONOS_TOOL = {
@@ -20,11 +22,6 @@ _ICONOS_TOOL = {
 
 class PlanPanel(Vertical):
     """Panel lateral: lista de pasos del plan + estado de cada uno."""
-
-    # Nota: sin reactive() con always_update aquí — esos watchers se disparaban
-    # antes de que compose() montara #plan-body, causando un render con
-    # visual=None dentro del propio Vertical. Mantenemos el estado como
-    # atributos simples y refrescamos manualmente vía _repintar().
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -50,7 +47,6 @@ class PlanPanel(Vertical):
         self._repintar()
 
     def marcar_simple(self, tool: str) -> None:
-        """Caso plan de 1 paso (no multi-tool): mostrarlo igual, sin lista."""
         icono = _ICONOS_TOOL.get(tool, "•")
         body = self.query_one("#plan-body", Static)
         body.update(f"{icono} Tarea simple → [b]{tool}[/b]")
@@ -83,3 +79,6 @@ class PlanPanel(Vertical):
         self.plan_activo = False
         body = self.query_one("#plan-body", Static)
         body.update("—")
+
+
+__all__ = ["PlanPanel", "ConfigPanel", "ConfigOption", "ConfigSection"]
