@@ -135,6 +135,7 @@ class AetherApp(App):
         self._context_used = 0
         self._context_total = 128000
         self._ultima_orden = ""
+        self._en_debug_block = False
         self._settings = {
             "model": "ornith:9b",
             "provider": "Ollama",
@@ -277,6 +278,7 @@ class AetherApp(App):
 
         self._ultima_orden = orden
         self._procesando = True
+        self._en_debug_block = False
         self._refresh_top_bar()
 
         self.run_worker(
@@ -372,24 +374,59 @@ class AetherApp(App):
 
     def _render_linea_stdout(self, chat: RichLog, texto: str) -> None:
         """Renderiza una línea de stdout ya individualizada, con el set
-        único de marcadores tipográficos (sin emojis mezclados con color)."""
+        único de marcadores tipográficos (sin emojis mezclados con color).
+
+        El ruido interno del motor (conexiones MCP, dump de contexto,
+        traza de "Intención decidida...", turnos de memoria) solo se
+        muestra si el switch Debug está en ON (F2 → Debug). Si está OFF
+        se oculta, sin perder nunca la respuesta real de Aether aunque
+        venga pegada a una de estas trazas.
+        """
         if not texto:
             return
 
-        # Ocultar por completo el ruido de conexión MCP (no aporta nada al usuario).
-        if texto.startswith("[MCP]:") or "[MCP]:" in texto:
+        debug_on = bool(self._settings.get("debug", False))
+
+        # ── Bloque "=== DEBUG: CONTEXT DUMP === ... ====================" ──
+        # Puede venir como varias líneas separadas; trackeamos el estado
+        # entre llamadas para ocultar el bloque completo cuando debug=off.
+        if texto.startswith("=== DEBUG"):
+            self._en_debug_block = True
+            if debug_on:
+                chat.write(Text(f"  ⎿ {texto}", style="dim"))
             return
 
-        # El motor a veces pega la traza de debug "Intención decidida..."
-        # directamente antes de la respuesta real, sin separador (ver
-        # captura 2026-07-05: "Intención decidida por razonamiento del
-        # modelo: textAether:¡Hola! ..."). Sacamos el ruido de debug; si la
-        # respuesta real vino pegada atrás de un "Aether:", la rescatamos.
+        if self._en_debug_block:
+            es_cierre = bool(re.fullmatch(r"=+", texto))
+            if debug_on:
+                chat.write(Text(f"  ⎿ {texto}", style="dim"))
+            if es_cierre:
+                self._en_debug_block = False
+            return
+
+        # ── Conexiones MCP: puro ruido de arranque, solo con debug=on ──
+        if texto.startswith("[MCP]:") or "[MCP]:" in texto:
+            if debug_on:
+                chat.write(Text(f"  ⎿ {texto}", style="dim"))
+            return
+
+        # ── Traza "Intención decidida..." pegada a la respuesta real ──
+        # El motor a veces pega esto directo antes de "Aether:..." sin
+        # separador (ver captura 2026-07-05). La respuesta real SIEMPRE
+        # se rescata y se muestra; la traza de debug solo si debug=on.
         if "Intención decidida por razonamiento del modelo" in texto:
+            if debug_on:
+                chat.write(Text(f"  ⎿ {texto.split('Aether:', 1)[0].strip()}", style="dim"))
             if "Aether:" in texto:
                 contenido = texto.split("Aether:", 1)[-1].strip()
                 if contenido:
                     chat.write(Text(f"\n● {contenido}", style="bold"))
+            return
+
+        # ── Turno de memoria guardado: solo con debug=on ──
+        if texto.startswith("[MEMORIA]"):
+            if debug_on:
+                chat.write(Text(f"  ⎿ {texto}", style="dim"))
             return
 
         if "🎙️" in texto or texto.startswith("Aether:"):
