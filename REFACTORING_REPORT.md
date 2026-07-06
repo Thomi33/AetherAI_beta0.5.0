@@ -9,7 +9,7 @@ Refactorización completa del monolito `jarvis.py` en arquitectura modular + mig
 > **Addendum (2026-06-25) — CrewAI eliminado por completo.** En una limpieza
 > posterior se borraron los archivos legados de CrewAI (`builder.py`,
 > `executor.py`, el servicio deprecado y los launchers `jarvis*.py`) y se
-> **desinstaló el paquete `crewai`** del entorno. El motor es **LangGraph-only**;
+> **se desinstaló el paquete `crewai`** del entorno. El motor es **LangGraph-only**;
 > los snippets "Antes (CrewAI)" de abajo se conservan solo como contexto histórico.
 
 ---
