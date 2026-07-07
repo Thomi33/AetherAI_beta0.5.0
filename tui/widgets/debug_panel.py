@@ -21,6 +21,7 @@ class DebugPanel(Static):
             prefix = f"[{tipo.upper()}]" if tipo else ""
             texto = f"{prefix} {mensaje}"
             self._debug_logs.append(texto)
+            self._repintar()
 
     def _repintar(self):
         """Reconstruye el contenido visual del panel."""
