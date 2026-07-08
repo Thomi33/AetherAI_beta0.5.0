@@ -2,13 +2,13 @@
 app.py — Aplicación principal TUI de Aether.
 """
 
+from rich.markup import escape
+
 from textual.app import App, ComposeResult
-from textual.widgets import (
-    Header, Footer, Static, Label, RichLog,
-    Input, Button, TabbedContent, Tabs,
-)
+from textual.widgets import Header, Footer, Static, Input, Button
 from textual import work
 
+from tui.widgets.chat_panel import ChatPanel
 from tui.widgets.plan_panel import PlanPanel
 from tui.widgets.status_bar import StatusBar
 from tui.widgets.debug_panel import DebugPanel
@@ -28,78 +28,23 @@ class AetherApp(App):
     """Aplicación TUI principal de Aether."""
 
     CSS = """
-    Screen {
-        background: $surface;
-        color: $text;
-    }
-
-    #chat_log {
-        height: 1fr;
-    }
-
-    #streaming_line {
-        height: auto;
-        color: $secondary-lighten-2;
-        padding: 0 1;
-    }
-
-    #plan_panel, #status_bar, #debug_panel {
-        dock: bottom;
-    }
-
-    #status_bar {
-        height: 2;
-        background: $primary;
-        color: $text;
-        padding: 0 1;
-    }
-
-    #debug_panel {
-        height: 4;
-        background: $surface;
-        color: $text;
-        padding: 0 1;
-    }
-
-    .chat-line {
-        margin-bottom: 1;
-    }
-
-    .user-message {
-        color: $primary-lighten-2;
-    }
-
-    .assistant-message {
-        color: $secondary-lighten-2;
-    }
-
-    #plan_panel {
-        height: 6;
-        background: $surface-darken-1;
-        color: $text;
-        padding: 0 1;
-    }
-
-    #tools_log {
-        height: 4;
-    }
+    Screen { background: $surface; color: $text; }
+    #chat_panel { height: 1fr; }
+    #streaming_line { height: auto; color: $secondary-lighten-2; padding: 0 1; }
+    #plan_panel, #status_bar, #debug_panel { dock: bottom; }
+    #status_bar { height: 2; background: $primary; color: $text; padding: 0 1; }
+    #debug_panel { height: 4; background: $surface; color: $text; padding: 0 1; }
+    #plan_panel { height: 6; background: $surface-darken-1; color: $text; padding: 0 1; }
     """
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._plan_pasos = []
-        self._plan_index = 0
-        self._plan_activo = False
-        self._model = "ornith:9b"
         self._thinking = False
-        self._tools_enabled = True
-        self._context_used = 0
-        self._respuesta_en_curso = ""  # buffer de tokens del turno actual
+        self._respuesta_en_curso = ""
 
     def compose(self) -> ComposeResult:
-        """Compone la interfaz con los widgets principales."""
         yield Header()
-        yield RichLog(id="chat_log", auto_scroll=True, markup=True, classes="chat-log")
+        yield ChatPanel(id="chat_panel")
         yield Static("", id="streaming_line")
         yield PlanPanel(id="plan_panel")
         yield DebugPanel(id="debug_panel")
@@ -117,30 +62,31 @@ class AetherApp(App):
             inicializar_motor()
         except Exception as e:  # noqa: BLE001
             self.call_from_thread(
-                self.query_one("#chat_log", RichLog).write,
+                self.query_one("#chat_panel", ChatPanel).agregar_mensaje,
                 f"⚠️ Error inicializando el motor: {e}",
+                "assistant",
             )
 
-    def on_button_pressed(self, event: Button.Pressed):
+    def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn_enviar":
             self._enviar_mensaje()
 
-    def on_key(self, event):
-        if event.key == "enter" and self.focused and self.focused.id == "input_chat":
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "input_chat":
+            event.stop()
             self._enviar_mensaje()
 
-    def _enviar_mensaje(self):
-        """Envía un mensaje al chat y dispara el procesamiento en el motor."""
+    def _enviar_mensaje(self) -> None:
         if self._thinking:
-            return  # ya hay un turno en curso
+            return
 
         input_widget = self.query_one("#input_chat", Input)
         texto = input_widget.value.strip()
         if not texto:
             return
 
-        chat_log = self.query_one("#chat_log", RichLog)
-        chat_log.write(f"👤 {texto}")
+        chat_panel = self.query_one("#chat_panel", ChatPanel)
+        chat_panel.agregar_mensaje(texto, "user")
         input_widget.value = ""
 
         self._thinking = True
@@ -154,19 +100,15 @@ class AetherApp(App):
             self.call_from_thread(self._manejar_evento, evento)
 
     def _manejar_evento(self, evento) -> None:
-        """Se ejecuta siempre en el hilo principal (thread-safe para widgets)."""
-        chat_log = self.query_one("#chat_log", RichLog)
+        chat_panel = self.query_one("#chat_panel", ChatPanel)
         streaming_line = self.query_one("#streaming_line", Static)
 
         if isinstance(evento, TokenEvent):
-            # Acumulamos en el buffer y actualizamos SIEMPRE el mismo widget
-            # en vez de escribir una línea nueva por token -> no más saltos de línea.
             self._respuesta_en_curso += evento.fragmento
-            streaming_line.update(f"🎙️  {self._respuesta_en_curso}")
+            streaming_line.update(f"🎙️  {escape(self._respuesta_en_curso)}")
 
         elif isinstance(evento, StdoutLineEvent):
-            debug_panel = self.query_one("#debug_panel", DebugPanel)
-            debug_panel.agregar_log(evento.texto)
+            self.query_one("#debug_panel", DebugPanel).agregar_log(evento.texto)
 
         elif isinstance(evento, NodeUpdateEvent):
             plan_panel = self.query_one("#plan_panel", PlanPanel)
@@ -174,15 +116,13 @@ class AetherApp(App):
                 plan_panel.actualizar_delta(evento.nodo, evento.delta)
 
         elif isinstance(evento, DoneEvent):
-            # Volcamos la respuesta completa como UNA sola línea al chat_log
-            # y limpiamos el widget de streaming.
             respuesta_final = self._respuesta_en_curso.strip() or evento.respuesta
-            chat_log.write(f"🎙️  Aether: {respuesta_final}")
+            chat_panel.agregar_mensaje(respuesta_final, "assistant")
             streaming_line.update("")
             self._finalizar_turno()
 
         elif isinstance(evento, ErrorEvent):
-            chat_log.write(f"⚠️ Error: {evento.mensaje}")
+            chat_panel.agregar_mensaje(f"⚠️ Error: {evento.mensaje}", "assistant")
             streaming_line.update("")
             self._finalizar_turno()
 
@@ -193,20 +133,7 @@ class AetherApp(App):
         input_widget.disabled = False
         input_widget.focus()
 
-    @property
-    def plan_pasos(self) -> list:
-        return self._plan_pasos
-
-    @property
-    def plan_index(self) -> int:
-        return self._plan_index
-
-    @property
-    def plan_activo(self) -> bool:
-        return self._plan_activo
-
 
 def run() -> None:
-    """Punto de entrada para lanzar la TUI de Aether."""
     app = AetherApp()
     app.run()

@@ -124,143 +124,66 @@ class _QueueWriter(io.TextIOBase):
     """
     file-like object que reemplaza sys.stdout temporalmente.
 
-    Patrones que maneja (todos provienen de graph_nodes.py):
+    Después de mover el streaming de tokens a streaming.emit_token(),
+    todo lo que llega acá es SIEMPRE log/debug (print() de graph_nodes.py:
+    [MCP], [PLAN EXECUTOR], [FALLBACK], etc.). Ya no hay tokens del LLM
+    compitiendo por este buffer, así que no hace falta detectar prefijos
+    ni mantener estado de "estamos en streaming".
 
-    A) print("🔧 [PLAN EXECUTOR]: Paso 1/3")
-       → write() llega con '\\n' al final → StdoutLineEvent al ProgressLog.
-
-    B) print(t, end="", flush=True)  dentro de _on_token
-       → write() llega SIN '\\n', múltiples veces → TokenEvent al chat.
-
-    C) print("\\n🎙️  Aether: ", end="", flush=True)  — el PREFIJO que emite
-       _on_token antes del primer token real.
-       → Contiene '\\n' al INICIO + texto sin '\\n' al final. Sin fix,
-         el '\\n' hacía que se tratara como línea de log vacía + los tokens
-         subsiguientes se desincronizaban del buffer.
-       FIX: el prefijo "🎙️" se detecta y se descarta silenciosamente;
-       el chat en app.py ya agrega su propio prefijo al mostrar la respuesta.
-
-    D) print(f"   ⏳ {i}...", end="\\r", flush=True)  — countdown de visión
-       → end="\\r" (retorno de carro, NO '\\n'). Sin fix, los 5 countdowns
-         se acumulan en el buffer y salen todos juntos cuando llega el
-         próximo '\\n' (el del "DEBUG SQLITE:" de registrar_turno).
-       FIX: '\\r' actúa como separador igual que '\\n', pero las líneas
-         resultantes se descartan (no las queremos en el log ni en el chat).
+    - '\\n' → línea completa de log → StdoutLineEvent
+    - '\\r' → línea de sobreescritura (countdown ⏳) → se descarta
     """
-
-    # Prefijo que _on_token imprime antes del primer token real.
-    # Lo ignoramos; app.py pone su propio "🎙️  Aether:" al mostrar la respuesta.
-    _PREFIJO_AETHER = "🎙️"
 
     def __init__(self, q: "queue.Queue[Evento]"):
         self._q = q
         self._buffer = ""
-        self._en_streaming = False   # True mientras estamos recibiendo tokens del LLM
 
     def write(self, s: str) -> int:
         if not s:
             return 0
-
         self._buffer += s
-
-        # ── Caso A y D: hay separador de línea (\n o \r) ────────────────
-        # \n → línea real de log
-        # \r → línea de "sobreescritura" (countdown ⏳) → descartar
-        if "\n" in self._buffer or "\r" in self._buffer:
-            # Partir por ambos separadores, preservando cuál fue cuál
-            import re as _re
-            partes = _re.split(r"(\n|\r)", self._buffer)
-            self._buffer = ""
-
-            i = 0
-            while i < len(partes):
-                segmento = partes[i]
-                sep = partes[i + 1] if i + 1 < len(partes) else None
-                i += 2
-
-                if sep == "\r":
-                    # Countdown ⏳ o cualquier línea de "sobreescritura" → ignorar
-                    self._en_streaming = False
-                    continue
-
-                # sep == "\n" o es el fragmento final sin separador
-                texto = segmento.strip()
-
-                if not texto:
-                    # Línea vacía o solo whitespace → skip (pero puede marcar
-                    # el fin del streaming si estábamos en él)
-                    if sep == "\n":
-                        self._en_streaming = False
-                    continue
-
-                if self._PREFIJO_AETHER in texto:
-                    # Es el prefijo "🎙️  Aether: " que _on_token imprime antes
-                    # del primer token. Lo descartamos; activamos modo streaming.
-                    self._en_streaming = True
-                    # Si hay texto DESPUÉS del prefijo en la misma línea
-                    # (raro, pero por las dudas), emitirlo como TokenEvent.
-                    after = texto.split(self._PREFIJO_AETHER, 1)[-1].lstrip(": ").strip()
-                    if after:
-                        self._q.put(TokenEvent(fragmento=after))
-                    continue
-
-                if sep == "\n":
-                    # Línea completa → log de progreso
-                    self._en_streaming = False
-                    self._q.put(StdoutLineEvent(texto=segmento.rstrip("\r\n")))
-                else:
-                    # Fragmento final sin separador — puede ser residuo
-                    self._buffer = segmento
-
+        if "\n" not in self._buffer and "\r" not in self._buffer:
             return len(s)
 
-        # ── Caso B y C (parcial): fragmento sin ningún separador ────────
-        # Son tokens del LLM llegando uno a uno con print(t, end="", flush=True).
-        if self._buffer:
-            self._q.put(TokenEvent(fragmento=self._buffer))
-            self._buffer = ""
+        import re as _re
+        partes = _re.split(r"(\n|\r)", self._buffer)
+        self._buffer = partes.pop()  # leftover sin separador (o "" si terminó justo en uno)
+
+        for i in range(0, len(partes), 2):
+            segmento, sep = partes[i], partes[i + 1]
+            if sep == "\r":
+                continue  # countdown / overwrite → descartar
+            texto = segmento.rstrip("\r\n")
+            if texto.strip():
+                self._q.put(StdoutLineEvent(texto=texto))
         return len(s)
 
     def flush(self) -> None:
-        # No-op intencional. print(flush=True) llama aquí en cada token,
-        # pero ya resolvemos todo en write(). No emitir nada aquí para
-        # no duplicar eventos.
         pass
 
     def vaciar_residual(self) -> None:
-        """Llamar UNA SOLA VEZ al terminar el grafo, para no perder el
-        último fragmento que haya quedado sin separador en el buffer."""
         if self._buffer.strip():
-            if self._en_streaming:
-                self._q.put(TokenEvent(fragmento=self._buffer))
-            else:
-                self._q.put(StdoutLineEvent(texto=self._buffer))
+            self._q.put(StdoutLineEvent(texto=self._buffer))
         self._buffer = ""
-        self._en_streaming = False
 
 
 def _correr_grafo_en_hilo(orden: str, q: "queue.Queue[Evento]") -> None:
-    """
-    Ejecuta el grafo con stream_mode='updates' en un hilo separado,
-    redirigiendo stdout a la cola mientras corre. Al terminar, mete un
-    DoneEvent (o ErrorEvent si algo reventó).
-    """
     from core.agent.graph_builder import get_graph
     from core.agent.graph_state import crear_estado_inicial
     from core.memory.memory_manager import registrar_turno
+    from core.agent.streaming import set_token_sink, clear_token_sink
 
     writer = _QueueWriter(q)
+    set_token_sink(lambda frag: q.put(TokenEvent(fragmento=frag)))
     try:
         registrar_turno(_motor.mem, "usuario", orden)
 
         grafo = get_graph()
         estado = crear_estado_inicial(orden, _motor.mem, modo_autonomo=True)
-
         ultimo_estado: dict[str, Any] = dict(estado)
 
         with contextlib.redirect_stdout(writer):
             for update in grafo.stream(estado, stream_mode="updates"):
-                # update es {nombre_nodo: dict_parcial} (uno por nodo que corrió)
                 for nodo, delta in update.items():
                     if isinstance(delta, dict):
                         ultimo_estado.update(delta)
@@ -270,9 +193,11 @@ def _correr_grafo_en_hilo(orden: str, q: "queue.Queue[Evento]") -> None:
         respuesta = ultimo_estado.get("final_response") or "Operación completada."
         q.put(DoneEvent(respuesta=respuesta))
 
-    except Exception as e:  # noqa: BLE001 — queremos capturar TODO para no tirar abajo la TUI
+    except Exception as e:
         writer.vaciar_residual()
         q.put(ErrorEvent(mensaje=str(e)))
+    finally:
+        clear_token_sink()
 
 
 def iter_eventos(orden: str) -> Iterator[Evento]:
