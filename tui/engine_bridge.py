@@ -168,14 +168,14 @@ class _QueueWriter(io.TextIOBase):
 
 
 def _correr_grafo_en_hilo(orden: str, q: "queue.Queue[Evento]") -> None:
-    from core.agent.graph_builder import get_graph
-    from core.agent.graph_state import crear_estado_inicial
-    from core.memory.memory_manager import registrar_turno
-    from core.agent.streaming import set_token_sink, clear_token_sink
-
     writer = _QueueWriter(q)
-    set_token_sink(lambda frag: q.put(TokenEvent(fragmento=frag)))
     try:
+        from core.agent.graph_builder import get_graph
+        from core.agent.graph_state import crear_estado_inicial
+        from core.memory.memory_manager import registrar_turno
+        from core.agent.streaming import set_token_sink, clear_token_sink
+
+        set_token_sink(lambda frag: q.put(TokenEvent(fragmento=frag)))
         registrar_turno(_motor.mem, "usuario", orden)
 
         grafo = get_graph()
@@ -193,11 +193,15 @@ def _correr_grafo_en_hilo(orden: str, q: "queue.Queue[Evento]") -> None:
         respuesta = ultimo_estado.get("final_response") or "Operación completada."
         q.put(DoneEvent(respuesta=respuesta))
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — cualquier falla acá, incluidos imports, debe llegar a la UI
         writer.vaciar_residual()
-        q.put(ErrorEvent(mensaje=str(e)))
+        q.put(ErrorEvent(mensaje=f"{type(e).__name__}: {e}"))
     finally:
-        clear_token_sink()
+        try:
+            from core.agent.streaming import clear_token_sink
+            clear_token_sink()
+        except Exception:
+            pass
 
 
 def iter_eventos(orden: str) -> Iterator[Evento]:

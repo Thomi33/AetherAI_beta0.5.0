@@ -2117,22 +2117,16 @@ def node_text(state: AetherState) -> dict:
     Respuesta directa via ollama streaming para texto/conversación.
     Este nodo SÍ llama al LLM porque no es una tool de datos:
     es el caso de charla/conocimiento general donde Ornith responde directo.
-
-    Usa _system_prompt_chat (sin protocolo [SHELL]) en vez de _system_prompt,
-    porque este nodo no ejecuta nada — solo conversa. Como red de seguridad
-    adicional, si el LLM igual emite un [SHELL] (ej. el usuario referenció
-    un comando del turno anterior y el modelo intentó "ejecutarlo" en texto),
-    no se devuelve el tag crudo: se convierte en una pregunta de confirmación.
     """
+    from core.agent.streaming import emit_token  # 👈 nuevo import
+
     orden = state["orden"]
     mem   = state["mem"]
 
     tokens: list[str] = []
     def _on_token(t):
-        if not tokens:
-            print("\n🎙️  Aether: ", end="", flush=True)
         tokens.append(t)
-        print(t, end="", flush=True)
+        emit_token(t)   # 👈 antes: print del prefijo + print(t, end="", flush=True)
 
     try:
         raw = _llm_chat(
@@ -2149,15 +2143,12 @@ def node_text(state: AetherState) -> dict:
             "messages": [AIMessage(content=respuesta)],
         }
 
-    if tokens:
-        print()
+    # (se borra el `if tokens: print()` — ya no escribe a stdout)
 
-    # Always parse Ornith reasoning in chat mode
     reasoning, respuesta = _parse_ornith_thinking(raw)
     if reasoning:
         print(f"\n🧠 [Ornith thinking (chat)]: {reasoning[:250]}{'...' if len(reasoning)>250 else ''}")
 
-    # Defensa fuerte para el camino de texto
     comando_colado = _extraer_comando_de_texto(respuesta)
     if comando_colado:
         print(f"\n⚠️  [TEXT]: El LLM generó un comando pese al prompt de charla.")
@@ -2171,7 +2162,6 @@ def node_text(state: AetherState) -> dict:
         "messages":       [AIMessage(content=respuesta)],
         "_ornith_reasoning": reasoning,
     }
-
 
 # ══════════════════════════════════════════════════════════════════════
 # NODO: MEMORY
@@ -2280,6 +2270,8 @@ def node_plan_synthesizer(state: AetherState) -> dict:
     final_response (web, shell, vision, codigo). Esto garantiza que
     siempre es Ornith quien razona y responde al usuario.
     """
+    from core.agent.streaming import emit_token  # 👈 nuevo import
+
     orden = state["orden"]
     mem = state["mem"]
     plan_pasos = state.get("plan_pasos", [])
@@ -2290,12 +2282,10 @@ def node_plan_synthesizer(state: AetherState) -> dict:
     # Construir contexto con todos los datos crudos disponibles
     contexto_datos = ""
 
-    # Datos de pasos del plan
     for i, (paso, resultado) in enumerate(zip(plan_pasos, plan_resultados)):
         tool = paso.get("tool", "?") if isinstance(paso, dict) else "?"
         contexto_datos += f"\n\n[DATOS - Paso {i+1} ({tool})]:\n{str(resultado)[:2000]}"
 
-    # Datos sueltos en estado (para planes de 1 paso sin plan_resultados)
     if not contexto_datos:
         if state.get("web_results"):
             contexto_datos += f"\n\n[DATOS WEB]:\n{state['web_results'][:3000]}"
@@ -2303,6 +2293,36 @@ def node_plan_synthesizer(state: AetherState) -> dict:
             contexto_datos += f"\n\n[SALIDA SHELL]:\n{state['shell_output']}"
         if state.get("vision_result"):
             contexto_datos += f"\n\n[DESCRIPCIÓN VISUAL]:\n{state['vision_result']}"
+
+    tokens = []
+    def _on_token(t):
+        tokens.append(t)
+        emit_token(t)          # 👈 antes era print(t, end="", flush=True) (+ el print del prefijo)
+
+    raw = _llm_chat(
+        system=_system_prompt_sintesis(mem, state),
+        user=(
+            f"El usuario pidió: {orden}\n\n"
+            f"Datos recopilados por las herramientas:{contexto_datos}\n\n"
+            "Analiza los datos y responde al usuario de forma clara y útil en español. "
+            "No menciones los pasos internos ni el proceso técnico, solo el resultado."
+        ),
+        on_token=_on_token,
+    )
+
+    # ya no hace falta el `if tokens: print()` de acá abajo, se borra
+
+    reasoning, respuesta = _parse_ornith_thinking(raw)
+    if reasoning:
+        print(f"\n🧠 [Ornith thinking (síntesis)]: {reasoning[:200]}{'...' if len(reasoning)>200 else ''}")
+
+    return {
+        "final_response": respuesta,
+        "llm_response": respuesta,
+        "messages": [AIMessage(content=respuesta)],
+        "plan_activo": False,
+        "_ornith_reasoning": reasoning,
+    }
 
     tokens = []
     def _on_token(t):
