@@ -65,7 +65,7 @@ fi
 # 5. Optional Qwen/OpenAI check
 # -------------------------
 if [ -n "$QWEN_API_KEY" ]; then
-    echo "🤖 Qwen detectado"
+    #echo "🤖 Qwen detectado"
 fi
 
 if [ -n "$OPENAI_API_KEY" ]; then
