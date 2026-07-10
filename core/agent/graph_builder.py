@@ -40,6 +40,28 @@ from core.agent.node_context_manager import node_context_manager
 
 _TOOLS_CON_RESUMEN = frozenset({"shell", "codigo", "file_write", "web", "vision", "mcp"})  # launch goes direct to finalize so we can report PID cleanly
 
+# Campo de "datos crudos" que cada tool deja en el estado para que Ornith
+# los interprete. Si ese campo está vacío pero la tool YA fijó una
+# final_response propia (una decisión determinista: pedido de aclaración,
+# mensaje de error legible, cancelación, etc.), no tiene sentido volver a
+# pasar por el LLM de síntesis: Ornith no tiene datos nuevos que agregar y
+# puede reformular/alucinar sobre una respuesta que ya estaba bien.
+_CAMPO_DATOS_CRUDOS_POR_TOOL = {
+    "web":    "web_results",
+    "shell":  "shell_output",
+    "codigo": "shell_output",
+    "vision": "vision_result",
+    "mcp":    "mcp_result",
+}
+
+
+def _tiene_datos_crudos_para_sintetizar(state: AetherState, tool: str) -> bool:
+    campo = _CAMPO_DATOS_CRUDOS_POR_TOOL.get(tool)
+    if not campo:
+        return False
+    val = state.get(campo)
+    return isinstance(val, str) and val.strip() != ""
+
 
 def _destino_post_plan(state: AetherState) -> str:
     plan_pasos = state.get("plan_pasos")
@@ -54,7 +76,12 @@ def _destino_post_plan(state: AetherState) -> str:
         return "plan_executor"
     if len(plan_pasos) <= 1:
         paso = plan_pasos[0] if isinstance(plan_pasos[0], dict) else {}
-        if paso.get("tool") in _TOOLS_CON_RESUMEN:
+        tool = paso.get("tool")
+        if tool in _TOOLS_CON_RESUMEN:
+            ya_tiene_respuesta_final = bool((state.get("final_response") or "").strip())
+            hay_datos_crudos = _tiene_datos_crudos_para_sintetizar(state, tool)
+            if ya_tiene_respuesta_final and not hay_datos_crudos:
+                return "finalize"
             return "plan_synthesizer"
         return "finalize"
     return "plan_synthesizer"

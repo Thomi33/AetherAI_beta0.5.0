@@ -601,8 +601,10 @@ def _normalizar_args_mcp(server: str, name: str, arguments: dict, orden: str) ->
         query = arguments.get("query", "").strip()
 
         # Sacar ruido en lenguaje natural que GitHub Search no entiende
-        ruido = ["most popular", "más populares", "populares", "the", "los", "las",
-                 "repositorios", "repositories", "de", "sobre"]
+        ruido = ["most popular", "most famous", "más populares", "populares",
+                 "más famosos", "más famosas", "famosos", "famosas", "famoso", "famosa",
+                 "the", "los", "las", "repositorios", "repositories", "repos", "repo",
+                 "de", "sobre", "en github", "github"]
         query_limpia = query.lower()
         for kw in ruido:
             query_limpia = query_limpia.replace(kw, " ")
@@ -1015,7 +1017,17 @@ def _decidir_intencion_con_razonamiento(orden: str, mem: dict) -> str:
     if tiene_verbo_accion and any(kw in orden_norm for kw in _KW_MCP_N):
         print("   └─ [PLANNER]: MCP solicitado explícitamente por el usuario")
         return "mcp"
-    
+
+    # DETECCIÓN DETERMINISTA: menciones de servers MCP conocidos
+    # (github, repos, notion, filesystem) con verbo de acción NO deberían
+    # depender de que el LLM razone bien ni de que el usuario diga "mcp"
+    # literalmente. Si el usuario dice "repo"/"github", quiere el server
+    # real de GitHub, no un web-search genérico.
+    _KW_SERVERS_MCP = ("github", "repositorio", "repositorios", "repo", "repos", "notion")
+    if tiene_verbo_accion and any(kw in orden_norm for kw in _KW_SERVERS_MCP):
+        print("   └─ [PLANNER]: Mención de server MCP conocido (github/notion) → forzando intent=mcp")
+        return "mcp"
+
     system = (
         "Eres un analizador de intenciones muy preciso. Tu trabajo es "
         "razonar sobre qué necesita realmente el usuario y decidir la "
@@ -1033,7 +1045,7 @@ launch: abrir/ejecutar/lanzar programas, aplicaciones, juegos (Flatpak o PATH). 
 vision: capturar y analizar la pantalla
 codigo: escribir y ejecutar código nuevo
 memory: recordar o gestionar datos del usuario
-mcp: invocar herramientas externas vía Model Context Protocol (cuando el usuario lo pida explícitamente)
+mcp: invocar herramientas externas vía Model Context Protocol — esto incluye CUALQUIER pedido sobre repositorios/repos/GitHub (buscar, listar, consultar repos), páginas o notas de Notion, o archivos/directorios reales del sistema cuando se pide explícitamente por MCP
 text: charla normal, conversación, conocimiento general
 Piensa paso a paso (razonamiento detallado) sobre la orden.
 Al final de tu razonamiento, responde exactamente con una línea:
@@ -1052,6 +1064,8 @@ Ejemplos:
 "hola" → text
 "abre firefox" → launch
 "listame directorios usando MCP" → mcp
+"buscame los repos más famosos de rust en github" → mcp (es GitHub, no búsqueda web genérica)
+"cuáles son mis notas de notion sobre X" → mcp
 Tu razonamiento:"""
     try:
          raw = _llm_chat(system=system, user=user).strip()
@@ -1335,21 +1349,228 @@ def _args_del_paso_mcp(state: AetherState) -> dict:
     
     return {}
 
+# ── Resolución automática de argumentos faltantes tipo ID (search → act) ──
+
+_ID_LIKE_ARG_PATTERN = re.compile(
+    r"(^id$|_id$|^url$|_url$|page_id|database_id|data_source_id)",
+    re.IGNORECASE,
+)
+
+_RESOLVER_KEYWORDS_PRIORIDAD = ("search", "fetch", "find", "query", "list")
+
+
+def _tool_schema_mcp(catalogo: dict, server: str, name: str) -> dict:
+    """Busca el input_schema de una tool específica en el catálogo MCP."""
+    for t in catalogo.get(server, []) or []:
+        if isinstance(t, dict) and t.get("name") == name:
+            return t.get("input_schema", {}) or {}
+    return {}
+
+
+def _elegir_tool_resolver_mcp(catalogo: dict, server: str, name_a_evitar: str) -> str | None:
+    """
+    Busca en el catálogo del mismo server una tool de tipo búsqueda/consulta
+    (search, fetch, find, query, list) que sirva para RESOLVER un ID que
+    falta, sin tener que preguntarle al usuario el ID a mano.
+    """
+    tools_server = catalogo.get(server, []) or []
+    nombres = [t.get("name", "") for t in tools_server if isinstance(t, dict)]
+    for kw in _RESOLVER_KEYWORDS_PRIORIDAD:
+        for n in nombres:
+            if n != name_a_evitar and kw in n.lower():
+                return n
+    return None
+
+
+def _extraer_candidatos_de_resultado_mcp(texto: str) -> list[dict]:
+    """
+    Intenta extraer candidatos {"id": ..., "title": ...} del resultado crudo
+    de una tool de búsqueda/fetch MCP. Soporta:
+    1. JSON estructurado (lista de resultados, o dict con 'results'/'items').
+    2. Fallback de texto libre: UUIDs y URLs de notion.so.
+    """
+    import json as _json3
+
+    texto = texto or ""
+    candidatos: list[dict] = []
+
+    try:
+        data = _json3.loads(texto)
+        items = data if isinstance(data, list) else (data.get("results") or data.get("items") or [])
+        for item in items:
+            if isinstance(item, dict):
+                cid = item.get("id") or item.get("page_id") or item.get("url")
+                title = item.get("title") or item.get("name") or ""
+                if isinstance(title, list):  # Notion a veces anida rich_text
+                    title = " ".join(str(x) for x in title)
+                if cid:
+                    candidatos.append({"id": str(cid), "title": str(title)})
+        if candidatos:
+            return candidatos
+    except Exception:
+        pass
+
+    ids = re.findall(
+        r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+        texto,
+    )
+    urls = re.findall(r"https?://(?:www\.)?notion\.so/\S+", texto)
+    for u in urls:
+        candidatos.append({"id": u, "title": ""})
+    for i in ids:
+        if not any(i in c["id"] for c in candidatos):
+            candidatos.append({"id": i, "title": ""})
+    return candidatos
+
+
+def _resolver_argumentos_faltantes_mcp(server: str, name: str, arguments: dict, orden: str, manager) -> dict:
+    """
+    Si la tool elegida requiere argumentos que no vinieron completos:
+
+    - Argumentos tipo ID (page_id, database_id, url, etc.) → se intentan
+      resolver SOLOS invocando una tool de búsqueda/fetch del mismo server
+      (ej. notion-search) y extrayendo el ID del resultado. Si hay un único
+      candidato claro, se usa. Si hay varios y ninguno matchea con fuerza
+      el pedido del usuario, se pide aclaración (no se adivina).
+    - Argumentos de CONTENIDO (título nuevo, texto a escribir, valores,
+      sql, etc.) → NUNCA se inventan. Si faltan, se pide aclaración.
+
+    Retorna:
+      {"arguments": dict, "nota": str, "necesita_aclaracion": str|None, "error": str|None}
+    """
+    try:
+        catalogo = manager.list_all_tools()
+    except Exception as e:
+        return {"arguments": arguments, "nota": "", "necesita_aclaracion": None, "error": f"No se pudo leer el catálogo MCP: {e}"}
+
+    schema = _tool_schema_mcp(catalogo, server, name)
+    required = schema.get("required", []) or []
+
+    faltantes = [a for a in required if not arguments.get(a)]
+    if not faltantes:
+        return {"arguments": arguments, "nota": "", "necesita_aclaracion": None, "error": None}
+
+    id_faltantes = [a for a in faltantes if _ID_LIKE_ARG_PATTERN.search(a)]
+    contenido_faltantes = [a for a in faltantes if a not in id_faltantes]
+
+    nota_partes: list[str] = []
+
+    if id_faltantes:
+        resolver_name = _elegir_tool_resolver_mcp(catalogo, server, name)
+        if not resolver_name:
+            return {
+                "arguments": arguments, "nota": "",
+                "necesita_aclaracion": (
+                    f"Para usar '{name}' en '{server}' necesito {', '.join(id_faltantes)}, "
+                    "pero no encontré una herramienta de búsqueda en ese server para "
+                    "resolverlo solo. ¿Me pasás el ID o el link directo?"
+                ),
+                "error": None,
+            }
+
+        query = arguments.get("query") or orden
+        print(f"   └─ 🔗 [MCP RESOLVER]: falta(n) {id_faltantes}; resolviendo con '{server}:{resolver_name}' (query='{query}')...")
+        try:
+            resultado_busqueda = manager.call_tool(server, resolver_name, {"query": query})
+        except Exception as e:
+            return {"arguments": arguments, "nota": "", "necesita_aclaracion": None, "error": f"Falló la resolución automática vía '{resolver_name}': {e}"}
+
+        candidatos = _extraer_candidatos_de_resultado_mcp(resultado_busqueda)
+
+        if not candidatos:
+            return {
+                "arguments": arguments, "nota": "",
+                "necesita_aclaracion": (
+                    f"Busqué con '{resolver_name}' pero no encontré nada para completar "
+                    f"{', '.join(id_faltantes)}. ¿Podés darme más detalles o el link directo?"
+                ),
+                "error": None,
+            }
+
+        if len(candidatos) > 1:
+            orden_norm = _normalizar(orden)
+            match_fuerte = [c for c in candidatos if c.get("title") and _normalizar(c["title"]) in orden_norm]
+            if len(match_fuerte) == 1:
+                candidatos = match_fuerte
+            else:
+                titulos = ", ".join(f"«{c.get('title') or c['id']}»" for c in candidatos[:5])
+                return {
+                    "arguments": arguments, "nota": "",
+                    "necesita_aclaracion": f"Encontré varios resultados para \"{query}\": {titulos}. ¿Cuál de todos es?",
+                    "error": None,
+                }
+
+        elegido = candidatos[0]
+        for a in id_faltantes:
+            arguments[a] = elegido["id"]
+        etiqueta = elegido.get("title") or elegido["id"]
+        nota_partes.append(f"Resolví {', '.join(id_faltantes)} automáticamente vía '{resolver_name}' → {etiqueta}")
+        print(f"   └─ 🔗 [MCP RESOLVER]: resuelto → {etiqueta}")
+
+    if contenido_faltantes:
+        return {
+            "arguments": arguments,
+            "nota": " ".join(nota_partes),
+            "necesita_aclaracion": (
+                f"Ya encontré el destino correcto, pero me falta que me digas "
+                f"{', '.join(contenido_faltantes)} para poder ejecutar '{name}'. "
+                "¿Qué contenido/valor querés que ponga?"
+            ),
+            "error": None,
+        }
+
+    return {"arguments": arguments, "nota": " ".join(nota_partes), "necesita_aclaracion": None, "error": None}
+
+
+def _construir_mensaje_sin_tool(state: AetherState) -> dict:
+    # IMPORTANTE: esto NO es un error de ejecución MCP (no se llegó a
+    # invocar ningún server), es un fallo de PLANIFICACIÓN — el usuario
+    # mencionó MCP pero no hay una tool concreta que inferir de la orden
+    # (ej: comentario conversacional que solo contiene la palabra "MCP").
+    # No debe pasar por el pipeline de auto-diagnóstico (que buscaría en
+    # la web y propondría ejecutar comandos shell para "arreglar" algo
+    # que no está roto). En cambio, respondemos conversacionalmente.
+    orden_usuario = state.get("orden", "")
+    msg = (
+        "Mencionaste MCP pero no identifiqué una acción concreta para ejecutar "
+        f"a partir de: \"{orden_usuario}\". ¿Qué querés que haga puntualmente "
+        "(ej: buscar algo en GitHub, listar archivos, consultar Notion)?"
+    )
+    print(f"   └─ ⚠️  [MCP]: no se pudo inferir server/tool desde la orden; respondiendo sin diagnosticar.")
+    return {
+        "mcp_result":     "",
+        "llm_response":   None,
+        "final_response": msg,
+        "error_activo":   False,
+        "messages":       [HumanMessage(content=orden_usuario)],
+    }
+
+
 def node_mcp(state: AetherState) -> dict:
     """
     Invoca una tool de un servidor MCP externo, vía MCPClientManager
     (conexión persistente, ver core/tools/mcp_client.py).
 
     Espera args={"server": "...", "name": "...", "arguments": {...}}
-    en el paso actual del plan. NO sintetiza con LLM — devuelve el dato
-    crudo en mcp_result, igual que node_web/node_shell, para que
-    plan_synthesizer razone sobre él.
+    en el paso actual del plan.
+
+    Antes de ejecutar, intenta resolver automáticamente argumentos
+    faltantes tipo ID (page_id, database_id, url, etc.) invocando una
+    tool de búsqueda/fetch del mismo server (search → act, dos llamadas
+    encadenadas). Si falta contenido que no se puede inventar, o hay
+    ambigüedad real, pide aclaración de forma determinista en vez de
+    adivinar o dejar que el LLM rellene con basura.
+
+    NO sintetiza con LLM el resultado exitoso — devuelve el dato crudo en
+    mcp_result para que plan_synthesizer razone sobre él. Los mensajes
+    deterministas (aclaración / error de planificación) van directo en
+    final_response y el routing del grafo (_destino_post_plan) los manda
+    derecho a finalize, sin pasar por Ornith.
     """
     from core.tools.mcp_client import get_mcp_manager, MCPError
 
     args = _args_del_paso_mcp(state)
-    
-    # VALIDACIÓN AGREGADA: por si _args_del_paso_mcp falla
+
     if not isinstance(args, dict):
         msg = f"args debe ser dict, no {type(args).__name__}"
         print(f"   └─ ❌ [MCP]: {msg}")
@@ -1358,38 +1579,44 @@ def node_mcp(state: AetherState) -> dict:
             "error_mensaje":  msg,
             "error_contexto": "mcp",
         }
-    
+
     server = args.get("server")
     name = args.get("name")
-    arguments = args.get("arguments") or {}
+    arguments = dict(args.get("arguments") or {})
 
     if not server or not name:
-        # IMPORTANTE: esto NO es un error de ejecución MCP (no se llegó a
-        # invocar ningún server), es un fallo de PLANIFICACIÓN — el usuario
-        # mencionó MCP pero no hay una tool concreta que inferir de la orden
-        # (ej: comentario conversacional que solo contiene la palabra "MCP").
-        # No debe pasar por el pipeline de auto-diagnóstico (que buscaría en
-        # la web y propondría ejecutar comandos shell para "arreglar" algo
-        # que no está roto). En cambio, respondemos conversacionalmente.
-        orden_usuario = state.get("orden", "")
-        msg = (
-            "Mencionaste MCP pero no identifiqué una acción concreta para ejecutar "
-            f"a partir de: \"{orden_usuario}\". ¿Qué querés que haga puntualmente "
-            "(ej: buscar algo en GitHub, listar archivos, consultar Notion)?"
-        )
-        print(f"   └─ ⚠️  [MCP]: no se pudo inferir server/tool desde la orden; respondiendo sin diagnosticar.")
+        return _construir_mensaje_sin_tool(state)
+
+    manager = get_mcp_manager()
+    orden = state.get("orden", "")
+
+    resolucion = _resolver_argumentos_faltantes_mcp(server, name, arguments, orden, manager)
+
+    if resolucion.get("error"):
+        print(f"   └─ ❌ [MCP]: {resolucion['error']}")
+        return {
+            "error_activo":   True,
+            "error_mensaje":  resolucion["error"],
+            "error_contexto": "mcp",
+        }
+
+    if resolucion.get("necesita_aclaracion"):
+        msg = resolucion["necesita_aclaracion"]
+        print(f"   └─ ⚠️  [MCP]: pidiendo aclaración: {msg}")
         return {
             "mcp_result":     "",
             "llm_response":   None,
             "final_response": msg,
             "error_activo":   False,
-            "messages":       [HumanMessage(content=orden_usuario)],
+            "messages":       [HumanMessage(content=orden)],
         }
+
+    arguments = resolucion["arguments"]
+    nota_resolucion = resolucion.get("nota", "")
 
     print(f"\n🔌 [MCP]: Llamando '{name}' en server '{server}'...")
 
     try:
-        manager = get_mcp_manager()
         resultado = manager.call_tool(server, name, arguments)
     except MCPError as e:
         print(f"   └─ ❌ [MCP]: {e}")
@@ -1408,8 +1635,12 @@ def node_mcp(state: AetherState) -> dict:
 
     print(f"   └─ [MCP]: {len(resultado)} caracteres de datos obtenidos.")
 
+    resultado_final = resultado
+    if nota_resolucion:
+        resultado_final = f"[{nota_resolucion}]\n{resultado}"
+
     return {
-        "mcp_result":     resultado,
+        "mcp_result":     resultado_final,
         "llm_response":   None,
         "final_response": None,
         "messages":       [HumanMessage(content=state.get("orden", ""))],
