@@ -254,14 +254,36 @@ class MCPClientManager:
     def list_tools(self, server: str) -> list[dict]:
         """
         Lista las tools disponibles en un server (conecta si hace falta).
-        Devuelve [{"name":..., "description":...}, ...] simplificado,
-        útil para inyectar en el prompt del planner.
+        Devuelve [{"name":..., "description":..., "input_schema":...}, ...],
+        útil para inyectar en el prompt del planner Y para validar/resolver
+        argumentos requeridos antes de llamar la tool (ver node_mcp).
+
+        NOTA: el SDK de MCP expone el JSON Schema de entrada como
+        `inputSchema` (camelCase, tal cual el spec MCP). Antes este método
+        lo descartaba por completo, lo que dejaba a toda la lógica de
+        validación de argumentos requeridos (_inferir_args_mcp,
+        obtener_catalogo_mcp_condensado) operando siempre sobre {} sin que
+        nadie lo notara.
         """
         tools = self._run_coro(self._list_tools_async(server))
         return [
-            {"name": t.name, "description": getattr(t, "description", "") or ""}
+            {
+                "name": t.name,
+                "description": getattr(t, "description", "") or "",
+                "input_schema": getattr(t, "inputSchema", None) or {},
+            }
             for t in tools
         ]
+
+    def get_tool_schema(self, server: str, name: str) -> dict:
+        """
+        Devuelve el input_schema (JSON Schema) de una tool puntual, o {}
+        si no se encuentra. Usa list_tools (cacheado) por debajo.
+        """
+        for t in self.list_tools(server):
+            if t.get("name") == name:
+                return t.get("input_schema") or {}
+        return {}
 
     def list_all_tools(self) -> dict[str, list[dict]]:
         """Catálogo completo: {server: [tools...]} para todos los servers configurados."""
