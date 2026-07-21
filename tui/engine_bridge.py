@@ -120,6 +120,23 @@ def inicializar_motor() -> None:
     _motor.inicializado = True
 
 
+def obtener_historial_para_mostrar(n: int = 50) -> list[dict]:
+    """
+    Trae los últimos N turnos guardados en current.db para mostrarlos al
+    abrir la TUI. No filtra por sesion_id: cada corrida de la TUI genera
+    una sesión nueva (ver arriba), así que filtrar por la sesión actual
+    siempre daría una lista vacía. Esto es solo para continuidad visual
+    del historial, no para el contexto que recibe el LLM (eso lo maneja
+    node_context_manager con su propio filtrado por sesión/tema).
+    """
+    from core.memory.memory_manager import obtener_ultimos_turnos
+    try:
+        return obtener_ultimos_turnos(n)
+    except Exception as e:  # noqa: BLE001
+        print(f"[TUI] Error trayendo historial para mostrar: {e}")
+        return []
+
+
 class _QueueWriter(io.TextIOBase):
     """
     file-like object que reemplaza sys.stdout temporalmente.

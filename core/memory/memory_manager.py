@@ -384,6 +384,43 @@ def obtener_ultimos_turnos(n: int = 5) -> list[dict]:
         return []
 
 
+def listar_sesiones(limit: int = 15) -> list[dict]:
+    """
+    Resumen de las últimas `limit` sesiones distintas (para el comando
+    '/sesiones' de la TUI): sesion_id, fecha de inicio, cantidad de turnos,
+    y un preview del primer mensaje de usuario para identificarlas de un
+    vistazo sin tener que abrirlas.
+    """
+    try:
+        with _db() as con:
+            filas = con.execute("""
+                SELECT sesion_id, MIN(fecha) AS inicio, COUNT(*) AS turnos
+                FROM conversaciones
+                WHERE sesion_id != ''
+                GROUP BY sesion_id
+                ORDER BY inicio DESC
+                LIMIT ?
+            """, (limit,)).fetchall()
+
+            resultado = []
+            for f in filas:
+                primer = con.execute("""
+                    SELECT texto FROM conversaciones
+                    WHERE sesion_id = ? AND rol = 'usuario'
+                    ORDER BY id ASC LIMIT 1
+                """, (f["sesion_id"],)).fetchone()
+                resultado.append({
+                    "sesion_id": f["sesion_id"],
+                    "inicio":    f["inicio"],
+                    "turnos":    f["turnos"],
+                    "preview":   (primer["texto"][:60] if primer and primer["texto"] else ""),
+                })
+            return resultado
+    except Exception as e:
+        print(f"[MEMORIA] Error listando sesiones: {e}")
+        return []
+
+
 # ══════════════════════════════════════════════════════════════════════
 # ALIAS / COMPAT — para nodos del grafo que todavía esperan estas funcs
 # ══════════════════════════════════════════════════════════════════════

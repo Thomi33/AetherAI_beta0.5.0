@@ -54,6 +54,10 @@ class AetherState(TypedDict):
     # ── Visión ───────────────────────────────────────────────────────
     vision_result:  str           # descripción retornada por ver_pantalla()
 
+    # ── Computer use (loop percepción-acción) ───────────────────────
+    computer_use_log:    list[dict]  # pasos ejecutados [{paso, accion, error}, ...]
+    computer_use_result: str         # resumen en texto para plan_synthesizer
+
     # ── Context Manager ──────────────────────────────────────────────
     sesion_id:        str           # identificador único de sesión (UUID)
     context_slots:    dict          # {"tema": "...", "contexto": "...", ...}
@@ -145,6 +149,8 @@ def crear_estado_inicial(orden: str, mem: dict, modo_autonomo: bool = True) -> "
         "web_results":      "",
         "mcp_result":       "",
         "vision_result":    "",
+        "computer_use_log":    [],
+        "computer_use_result": "",
         "_codigo_original": "",
         "_archivo_codigo":  "",
 

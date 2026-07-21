@@ -56,10 +56,11 @@ class ConfigChangeEvent:
 class ConfigValidator:
     """Validador de configuraciones."""
     
-    VALID_MODELS = ["ornith:9b", "ornith:7b", "qwen3.5:9b", "qwen2.5vl:7b"]
+    VALID_MODELS = ["ornith:9b", "ornith:7b", "qwen3.5:9b", "qwen2.5vl:7b", "hf.co/deepreinforce-ai/Ornith-1.0-35B-GGUF:q4_K_M"]
     VALID_PROVIDERS = ["Ollama", "OpenAI", "Groq"]
     VALID_TEMP_RANGE = (0.0, 2.0)
     VALID_MAX_TOKENS_RANGE = (1, 8192)
+    VALID_NUM_PREDICT_RANGE = (1, 65536)
     VALID_TIMEOUT_RANGE = (10, 300)
     VALID_CTX_RANGE = (4096, 262144)
     
@@ -96,6 +97,17 @@ class ConfigValidator:
         try:
             val = int(value)
             return ConfigValidator.VALID_MAX_TOKENS_RANGE[0] <= val <= ConfigValidator.VALID_MAX_TOKENS_RANGE[1]
+        except (ValueError, TypeError):
+            return False
+
+    @staticmethod
+    def validate_num_predict(value: Any) -> bool:
+        """num_predict = presupuesto de tokens de generación (incluye el <think> de
+        Ornith). Rango más amplio que MAX_TOKENS porque un effort alto necesita
+        margen real para razonar sin cortarse a mitad del pensamiento."""
+        try:
+            val = int(value)
+            return ConfigValidator.VALID_NUM_PREDICT_RANGE[0] <= val <= ConfigValidator.VALID_NUM_PREDICT_RANGE[1]
         except (ValueError, TypeError):
             return False
     
@@ -183,6 +195,7 @@ class ConfigManager:
         "CARPETA_AETHER": ConfigValidator.validate_string,
         "TEMPERATURE": ConfigValidator.validate_temp,
         "MAX_TOKENS": ConfigValidator.validate_max_tokens,
+        "NUM_PREDICT": ConfigValidator.validate_num_predict,
         "VERBOSE": ConfigValidator.validate_bool,
         "DEBUG": ConfigValidator.validate_bool,
         "THEME": ConfigValidator.validate_string,
@@ -203,13 +216,14 @@ class ConfigManager:
         "MAX_TURNOS_CONTEXTO_PLAN": 0,
         "MAX_TURNOS_CONTEXTO_CHAT": 10,
         "OLLAMA_KEEP_ALIVE": -1,
-        "OLLAMA_GEN_OPTIONS": {"num_batch": 512, "num_gpu": 999, "num_thread": 8},
+        "OLLAMA_GEN_OPTIONS": {"num_batch": 512, "num_gpu": 8, "num_thread": 8},
         "OLLAMA_NUM_PARALLEL": 4,
         "OLLAMA_MAX_LOADED_MODELS": 2,
         "BASE_AETHER": "/mnt/basurero/Aether",
         "CARPETA_AETHER": "~/Aether",
         "TEMPERATURE": 0.6,
         "MAX_TOKENS": 2048,
+        "NUM_PREDICT": 2048,
         "VERBOSE": False,
         "DEBUG": False,
         "THEME": "default",

@@ -10,9 +10,11 @@ import subprocess
 import os
 import base64
 import json
+import time
 import requests
 
 from core.config.settings import MODELO_VISION, OLLAMA_HOST
+from core.agent.model_policy import ModelDecisionContext, choose_model, record_model_latency
 
 
 def ver_pantalla(pregunta: str = "¿Qué ves en esta pantalla?") -> str:
@@ -69,15 +71,26 @@ def ver_pantalla(pregunta: str = "¿Qué ves en esta pantalla?") -> str:
             f"Pregunta del usuario: {pregunta}"
         )
 
+        decision_modelo = choose_model(ModelDecisionContext(
+            task_kind="vision",
+            requested_model=MODELO_VISION,
+            prompt_chars=len(prompt_ajustado),
+            context_size=8192,
+        ))
+
         payload = {
-            "model":  MODELO_VISION,
+            "model":  decision_modelo.model,
             "prompt": prompt_ajustado,
             "images": [imagen_b64],
             "stream": False,   # ← antes era True
             "options": {"temperature": 0.1, "num_ctx": 8192},
                 }
     
-        r = requests.post(f"{OLLAMA_HOST}/api/generate", json=payload, timeout=120)
+        policy_start = time.time()
+        try:
+            r = requests.post(f"{OLLAMA_HOST}/api/generate", json=payload, timeout=120)
+        finally:
+            record_model_latency(decision_modelo, int((time.time() - policy_start) * 1000))
 
         if r.status_code == 200:
             data = r.json()
@@ -109,4 +122,3 @@ def ver_pantalla(pregunta: str = "¿Qué ves en esta pantalla?") -> str:
                 os.unlink(screenshot)
             except Exception:
                 pass
-

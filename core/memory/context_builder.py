@@ -21,14 +21,11 @@ from core.memory.memory_manager import (
     obtener_turnos_por_tema,
     obtener_ultimos_turnos,
 )
+from core.config.settings import CONTEXTO_CONV_MAX_CHARS, MAX_TURNOS_CONTEXTO
 
 # Temas que NO necesitan historial de comandos en el contexto
 _TEMAS_SIN_COMANDOS = {"chat", "text", "memory", "web", ""}
 
-# Máximo de turnos por tema a inyectar
-MAX_TURNOS_TEMA   = 8
-# Máximo de caracteres del slot de conversación
-MAX_CHARS_CONV    = 3000
 # Máximo de recuerdos a inyectar
 MAX_RECUERDOS     = 10
 
@@ -83,11 +80,13 @@ def construir_contexto_memoria(mem: dict, tema: str = "", sesion_id: str = "") -
         descartado.append("recuerdos (ninguno relevante)")
 
     # ── Slot 3: CONVERSACIÓN filtrada por tema ────────────────────────
-        turnos_relevantes = []
+    turnos_relevantes = []
 
     if tema:
         
-        turnos_relevantes = obtener_turnos_por_tema(tema,sesion_id=sesion_id, limit=MAX_TURNOS_TEMA)
+        turnos_relevantes = obtener_turnos_por_tema(
+            tema, sesion_id=sesion_id, limit=MAX_TURNOS_CONTEXTO
+        )
 
     if not turnos_relevantes:
         # Usar sesion_id explícito, o fallback al último de la RAM
@@ -96,11 +95,13 @@ def construir_contexto_memoria(mem: dict, tema: str = "", sesion_id: str = "") -
         if sesion_actual:
             turnos_relevantes = [
                 t for t in turnos_ram if t.get("sesion_id") == sesion_actual
-            ][-MAX_TURNOS_TEMA:]
+            ][-MAX_TURNOS_CONTEXTO:]
         else:
-            turnos_relevantes = turnos_ram[-3:]
-            if len(turnos_ram) > 3:
-                descartado.append(f"conversación ({len(turnos_ram) - 3} turnos antiguos omitidos)")
+            turnos_relevantes = turnos_ram[-MAX_TURNOS_CONTEXTO:]
+            if len(turnos_ram) > MAX_TURNOS_CONTEXTO:
+                descartado.append(
+                    f"conversación ({len(turnos_ram) - MAX_TURNOS_CONTEXTO} turnos antiguos omitidos)"
+                )
 
     if turnos_relevantes:
         seleccion = []
@@ -109,13 +110,13 @@ def construir_contexto_memoria(mem: dict, tema: str = "", sesion_id: str = "") -
             rol   = str(t.get("rol", "?")).upper()
             texto = str(t.get("texto", ""))
             linea = f"  [{rol}]: {texto}"
-            if total_chars + len(linea) > MAX_CHARS_CONV:
+            if total_chars + len(linea) > CONTEXTO_CONV_MAX_CHARS:
                 descartado.append(f"conversación (truncada por presupuesto de caracteres)")
                 break
             seleccion.append(linea)
             total_chars += len(linea)
         seleccion.reverse()
-        slots["CONVERSACIÓN"] = "\n".join(seleccion)
+        slots[f"CONVERSACIÓN — {len(seleccion)} turnos"] = "\n".join(seleccion)
     else:
         descartado.append("conversación (sin historial relevante)")
 
@@ -159,8 +160,10 @@ def construir_context_dump(mem: dict, tema: str = "", sesion_id: str = "") -> st
     recuerdos_count = len(
         obtener_recuerdos(categoria=tema if tema else None, importancia_min=1, limit=MAX_RECUERDOS)
     )
-    turnos_tema = obtener_turnos_por_tema(tema,sesion_id=sesion_id, limit=MAX_TURNOS_TEMA) if tema else []
-    turnos_relevantes = obtener_turnos_por_tema(tema,sesion_id=sesion_id, limit=MAX_TURNOS_TEMA)
+    turnos_tema = (
+        obtener_turnos_por_tema(tema, sesion_id=sesion_id, limit=MAX_TURNOS_CONTEXTO)
+        if tema else []
+    )
     
     slots_activos = ["SISTEMA"]
     if recuerdos_count:

@@ -19,12 +19,47 @@
     "en mi pantalla", "en la pantalla"
   ],
 
+  "computer_use": [
+    "hace click en", "haz click en", "hace clic en", "haz clic en",
+    "click en", "clic en", "cliquea", "cliqueá", "clickea", "clickeá",
+    "hace doble click", "haz doble click", "doble click en", "doble clic en",
+    "click derecho en", "clic derecho en", "click derecho", "clic derecho",
+
+    "abri el boton", "abrí el botón", "abre el boton", "abre el botón",
+    "abri el menu", "abrí el menú", "abre el menu", "abre el menú",
+    "abri el desplegable", "abrí el desplegable", "abre el desplegable", "abre el desplegable",
+    "abri el panel", "abrí el panel", "abre el panel",
+
+    "apreta", "apretá", "presiona el boton", "presiona el botón",
+    "presiona enter", "apreta enter", "apretá enter", "toca enter",
+
+    "toca el", "tocá el", "toca la", "tocá la",
+    "selecciona el", "seleccioná el", "selecciona la", "seleccioná la",
+    "arrastra el", "arrastrá el", "arrastra la", "arrastrá la",
+
+    "controla mi mouse", "mueve el mouse", "movete por la pantalla",
+    "mueve el cursor a", "posiciona el mouse", "posiciona el cursor",
+
+    "navega en", "completa el formulario", "completá el formulario",
+    "usa la computadora para", "maneja la interfaz", "manejá la interfaz",
+
+    "escribi en el campo", "escribí en el campo", "escribe en el campo",
+    "escribi en", "escribí en", "escribe en",
+    "tipea", "tipeá", "pega en el campo", "pegá en el campo",
+
+    "scrollea", "scrolleá", "desplaza la pagina", "desplazá la página",
+    "baja la pagina", "bajá la página", "sube la pagina", "subí la página"
+  ],
+
   "launch": ["ejecuta", "abre", "lanza", "inicia", "corre"],
 
   "launch_excluye": [
     "comando", "script", "caché", "cache", "limpiar", "liberar",
     "instalar", "desinstalar", "actualizar", "configurar", "archivo",
-    "código", "codigo", "función", "funcion"
+    "código", "codigo", "función", "funcion",
+    "boton", "botón", "menu", "menú", "campo", "formulario",
+    "desplegable", "panel", "icono", "ícono", "casillero", "checkbox",
+    "pestaña", "pestana", "enlace", "link"
   ],
 
   "memory": [

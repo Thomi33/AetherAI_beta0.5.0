@@ -95,8 +95,16 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
             "'arguments': {...}} identificando qué servidor y qué tool MCP usar."
         ),
     },
-  }
-
+    "computer_use": {
+        "node": "node_computer_use",
+        "instruccion_requerida": True,
+        "descripcion": (
+            "Loop de percepción-acción: captura pantalla, decide una acción de "
+            "mouse/teclado con el modelo de visión, la ejecuta, repite hasta "
+            "cumplir el objetivo o alcanzar el límite de pasos."
+        ),
+    },
+}
 
 # Conjunto de nombres de tools válidos (conveniencia)
 TOOLS_VALIDAS: frozenset[str] = frozenset(TOOL_REGISTRY.keys())

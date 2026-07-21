@@ -1,9 +1,24 @@
 """
 chat_panel.py — Widget para mostrar conversaciones entre usuario y Aether.
+
+Usa un RichLog interno (scrollable, con markup) en vez de Static.update(),
+que sobreescribía todo el contenido en cada mensaje nuevo. Esto habilita:
+  1. Scroll hacia arriba dentro de la sesión actual (nativo de RichLog).
+  2. Carga en bloque del historial de sesiones pasadas al abrir la TUI,
+     vía cargar_historial().
+  3. Alternar entre la sesión en vivo y sesiones archivadas (comando
+     '/sesiones' + '/historial <n>' / '/historial actual' en app.py),
+     vía mostrar_sesion() / volver_a_sesion_actual().
+
+La sesión en vivo se guarda aparte en self._vivo (buffer de líneas ya
+renderizadas) para poder restaurarla tal cual al volver de ver una sesión
+archivada, sin perder nada de lo que pasó mientras el usuario miraba historial
+viejo.
 """
 
-
-from textual.widgets import RichLog, Static, Label
+from textual.app import ComposeResult
+from textual.widgets import RichLog, Static
+from rich.markup import escape
 
 
 class ChatPanel(Static):
@@ -11,7 +26,19 @@ class ChatPanel(Static):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._chat_log = None  # Se inicializa con el RichLog real en compose()
+        self._chat_log: RichLog | None = None
+        self._vivo: list[str] = []       # buffer de la sesión en vivo (para restaurar)
+        self._viendo_archivo = False     # True mientras se muestra una sesión vieja
+
+    def compose(self) -> ComposeResult:
+        self._chat_log = RichLog(
+            id="chat_richlog",
+            markup=True,
+            wrap=True,
+            highlight=False,
+            auto_scroll=True,
+        )
+        yield self._chat_log
 
     @property
     def log(self):
@@ -21,22 +48,87 @@ class ChatPanel(Static):
     def log(self, value):
         self._chat_log = value
 
-    def agregar_mensaje(self, mensaje=None, tipo="user"):
+    def agregar_mensaje(self, mensaje=None, tipo="user", from_history=False):
         """Agrega un mensaje al chat. Se llama desde app.py."""
         if mensaje is None:
             return
-        
+
         prefix = "👤 " if tipo == "user" else "🎙️  Aether: "
-        texto = f"{prefix}{mensaje}"
-        
-        # Usamos el RichLog real si está disponible
+        texto = f"{prefix}{escape(str(mensaje))}"
+
+        if not from_history:
+            # Todo lo que no viene de una carga de historial es actividad
+            # en vivo de esta sesión — se guarda siempre, se muestre o no.
+            self._vivo.append(texto)
+            if self._viendo_archivo:
+                # No interrumpimos la vista de la sesión archivada; el
+                # mensaje ya quedó en _vivo y aparece al volver con
+                # '/historial actual'.
+                return
+
         if self._chat_log:
-            self._chat_log.append(texto)
+            if not from_history:
+                self._chat_log.auto_scroll = (
+                    self._chat_log.scroll_y >= self._chat_log.max_scroll_y - 2
+                )
+            self._chat_log.write(texto)
         else:
-            # Fallback: agregar directamente al widget padre (Static)
+            # Fallback defensivo si compose() todavía no corrió.
             self.update(f"\n{texto}")
+
+    def cargar_historial(self, turnos: list[dict]) -> None:
+        """
+        Escribe en bloque el historial pasado (últimos N turnos globales,
+        ver engine_bridge.obtener_historial_para_mostrar) al montar la TUI.
+        No pasa a formar parte de _vivo: es contexto visual, no la sesión
+        actual.
+        """
+        if not self._chat_log or not turnos:
+            return
+
+        self._chat_log.auto_scroll = True
+        for turno in turnos:
+            self._escribir_turno(turno)
+        self._chat_log.write("[dim]── sesión anterior · fin del historial cargado ──[/dim]")
+
+    def mostrar_sesion(self, turnos: list[dict], etiqueta: str = "") -> None:
+        """
+        Reemplaza la vista actual por el historial completo de una sesión
+        archivada (comando '/historial <n>'). La sesión en vivo sigue
+        corriendo de fondo — se restaura con volver_a_sesion_actual().
+        """
+        if not self._chat_log:
+            return
+        self._viendo_archivo = True
+        self._chat_log.clear()
+        titulo = f"── viendo sesión archivada: {etiqueta} ──" if etiqueta else "── viendo sesión archivada ──"
+        self._chat_log.write(f"[bold]{titulo}[/bold]")
+        for turno in turnos:
+            self._escribir_turno(turno)
+        self._chat_log.write("[dim]── fin de sesión archivada · '/historial actual' para volver ──[/dim]")
+        self._chat_log.auto_scroll = True
+
+    def volver_a_sesion_actual(self) -> None:
+        """Restaura la vista de la sesión en vivo tal como quedó."""
+        if not self._chat_log:
+            return
+        self._viendo_archivo = False
+        self._chat_log.clear()
+        for texto in self._vivo:
+            self._chat_log.write(texto)
+        self._chat_log.auto_scroll = True
+
+    def _escribir_turno(self, turno: dict) -> None:
+        rol = turno.get("rol", "")
+        texto = turno.get("texto", "")
+        if not texto:
+            return
+        tipo = "user" if rol == "usuario" else "assistant"
+        self.agregar_mensaje(texto, tipo, from_history=True)
 
     def reset(self):
         """Resetea el chat."""
         if self._chat_log:
             self._chat_log.clear()
+        self._vivo.clear()
+        self._viendo_archivo = False

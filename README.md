@@ -228,7 +228,7 @@ Aether mantiene memoria **en RAM** (durante la sesión) y **persistente en
 SQLite** a través de un **subsistema controlado** (`core/memory/store/`),
 diseñado para ser estable, migrable y resistente a corrupción.
 
-- **DB única de producción:** `/mnt/basurero/Aether/db/current.db` (`DB_CURRENT`).
+- **DB única de producción:** `/mnt/nvme/Aether/db/current.db` (`DB_CURRENT`).
   Las demás DBs solo existen como `snapshots/`, `staging.db` y `backups/`.
 - **Esquema FIJO y versionado** (migraciones en `store/migrations/NNNN_*.sql`):
   - `conversations` — `id, timestamp, content, source`
@@ -299,13 +299,13 @@ terminal y a usar herramientas de Arch (`pacman`/`yay`/`flatpak`, nunca
 | `MODO_AUTONOMO` | `True` | Ejecuta sin pedir confirmación por cada paso |
 | `TOOL_CALLING_NATIVO` | `True` | Tool calling estructurado nativo |
 | `TIMEOUT_CMD` | `60` | Timeout (s) de comandos de shell |
-| `NUM_CTX` | `16384` | Ventana de contexto del modelo |
+| `NUM_CTX` | `8192` | Ventana de contexto del modelo |
 | `MAX_TURNOS_CONTEXTO` | `200` | Máx. turnos de conversación inyectados |
 | `MAX_TURNOS_CONTEXTO_PLAN` | `0` | Historial inyectado durante pasos de un plan multi-tool (0 = aislado) |
 | `MAX_TURNOS_CONTEXTO_CHAT` | `10` | Historial inyectado en el camino de charla (ventana chica anti-contaminación) |
-| `BASE_AETHER` | `/mnt/basurero/Aether` | Carpeta base del agente (DB, logs, screenshots…). |
+| `BASE_AETHER` | `/mnt/nvme/Aether` | Carpeta base del agente (DB, logs, screenshots…). |
 | `CARPETA_AETHER` | `~/Aether` | Destino por defecto de los archivos que crea `file_write` |
-| `OLLAMA_KEEP_ALIVE` | `30m` | Mantiene el modelo cargado en VRAM entre llamadas (↓ latencia) |
+| `OLLAMA_KEEP_ALIVE` | `-1` | Mantiene el modelo cargado en VRAM entre llamadas (↓ latencia) |
 | `OLLAMA_GEN_OPTIONS` | `{num_batch: 512}` | Opciones de generación extra (throughput); `num_gpu`/`num_thread` opcionales para forzar GPU |
 
 ---
@@ -351,7 +351,6 @@ python tests/test_tool_registry.py      # registro de tools + validar_plan()
 python tests/test_executor.py           # ejecución de pasos
 python tests/test_integracion.py        # end-to-end con el grafo real (mocks)
 python tests/test_planning_e2e.py       # planning multi-tool end-to-end
-python tests/test_shell_stop.py         # corte de generación de shell
 python tests/test_filewrite_flow.py     # flujo de file_write
 ```
 

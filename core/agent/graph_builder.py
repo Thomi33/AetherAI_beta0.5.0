@@ -14,7 +14,6 @@ from langgraph.graph import StateGraph, END
 
 from core.agent.graph_state import AetherState
 from core.agent.graph_nodes import (
-    node_router,
     node_planner,
     node_plan_executor,
     node_plan_synthesizer,
@@ -22,6 +21,7 @@ from core.agent.graph_nodes import (
     node_shell,
     node_launch,
     node_vision,
+    node_computer_use,
     node_codigo,
     node_text,
     node_memory,
@@ -38,7 +38,7 @@ from core.agent.node_context_manager import node_context_manager
 # CONDICIONALES
 # ══════════════════════════════════════════════════════════════════════
 
-_TOOLS_CON_RESUMEN = frozenset({"shell", "codigo", "file_write", "web", "vision", "mcp"})  # launch goes direct to finalize so we can report PID cleanly
+_TOOLS_CON_RESUMEN = frozenset({"shell", "codigo", "file_write", "web", "vision", "mcp", "computer_use"})  # launch goes direct to finalize so we can report PID cleanly
 
 # Campo de "datos crudos" que cada tool deja en el estado para que Ornith
 # los interprete. Si ese campo está vacío pero la tool YA fijó una
@@ -47,11 +47,12 @@ _TOOLS_CON_RESUMEN = frozenset({"shell", "codigo", "file_write", "web", "vision"
 # pasar por el LLM de síntesis: Ornith no tiene datos nuevos que agregar y
 # puede reformular/alucinar sobre una respuesta que ya estaba bien.
 _CAMPO_DATOS_CRUDOS_POR_TOOL = {
-    "web":    "web_results",
-    "shell":  "shell_output",
-    "codigo": "shell_output",
-    "vision": "vision_result",
-    "mcp":    "mcp_result",
+    "web":          "web_results",
+    "shell":        "shell_output",
+    "codigo":       "shell_output",
+    "vision":       "vision_result",
+    "mcp":          "mcp_result",
+    "computer_use": "computer_use_result",
 }
 
 

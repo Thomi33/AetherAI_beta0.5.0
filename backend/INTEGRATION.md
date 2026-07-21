@@ -11,9 +11,11 @@ FastAPI Endpoint
     ↓
 AetherService.process_message()
     ↓
-jarvis._procesar_orden()
+AetherService.process_message()
     ↓
-Gemma4:12b (Ollama)
+graph_service.procesar_orden_grafo()
+    ↓
+ornith:9b (Ollama)
     ↓
 Respuesta → Frontend
 ```
@@ -23,16 +25,16 @@ Respuesta → Frontend
 **Archivo**: `backend/core/aether_service.py`
 
 **Características**:
-- ✅ Inicializa `jarvis.py` UNA SOLA VEZ
+- ✅ Inicializa el grafo de LangGraph UNA SOLA VEZ
 - ✅ Mantiene memoria en RAM entre requests
-- ✅ Thread-safe: `threading.Lock` protege SQLite
+- ✅ Thread-safe: `threading.Lock` protege la ejecución
 - ✅ Logging interno (sin exponer errores al frontend)
-- ✅ Sin modificar `jarvis.py`
+- ✅ Sin modificar el motor CLI principal
 
 **Flujo**:
 ```python
 1. AetherService.initialize()
-   - Importa jarvis
+   - Importa core.services.graph_service
    - Ejecuta: inicializar_db()
    - Carga: cargar_memoria()
    - Indexa: actualizar_programas()
@@ -40,7 +42,7 @@ Respuesta → Frontend
 2. AetherService.process_message(user_msg)
    - Lock: _AETHER_LOCK.acquire()
    - Registra: registrar_turno(user)
-   - Procesa: _procesar_orden()
+   - Procesa: procesar_orden_grafo()
    - Registra: registrar_turno(respuesta)
    - Unlock
 ```
@@ -66,7 +68,7 @@ Salida:
 {
   "name": "Aether",
   "status": "ready|error|uninitialized",
-  "model": "gemma4:12b",
+  "model": "ornith:9b",
   "version": "1.0.0",
   "memory_size": 42,
   "agent_status": "online|offline"
@@ -75,12 +77,12 @@ Salida:
 
 ## Base de Datos
 
-**Ruta**: `/mnt/basurero/Javier/db/memoria.db` (sin cambios)
+**Ruta**: `/mnt/nvme/Aether/db/current.db`
 
 **Tablas SQLite**:
-- `conversaciones` - Turnos usuario/agente
-- `comandos` - Historial de comandos ejecutados
-- `recuerdos` - Preferencias y contexto
+- `conversations` - Turnos usuario/agente
+- `commands` - Historial de comandos ejecutados
+- `memories` - Preferencias y contexto
 
 **WAL Mode**: Soporta múltiples readers + 1 writer simultaneamente
 
@@ -92,8 +94,7 @@ _AETHER_LOCK = threading.Lock()
 # Cada request adquiere el lock antes de acceder a:
 with _AETHER_LOCK:
     registrar_turno()           # → SQLite
-    _procesar_orden()           # → LLM + Búsqueda web
-    jarvis.registrar_turno()    # → SQLite
+    procesar_orden_grafo()      # → LLM + Grafo LangGraph
 ```
 
 ## Logging
@@ -103,7 +104,7 @@ with _AETHER_LOCK:
 **Ubicación**: Logs en stderr del servidor
 
 **Logs especiales**:
-- ✅ `"✅ jarvis.py importado exitosamente"`
+- ✅ `"✅ AetherService inicializado exitosamente"`
 - ✅ `"✅ Aether inicializado correctamente"`
 - ⚠️ `"❌ Error durante inicialización de Aether: ..."`
 - ⚠️ `"Error procesando mensaje: ..."` (sin str(e) al frontend)
@@ -144,7 +145,7 @@ result = {
 return result
 ```
 
-2. No necesita modificar `jarvis.py`
+2. No necesita modificar el motor core
 3. No afecta BD SQLite
 4. Solo eliminar `backend/core/aether_service.py` si se desea
 

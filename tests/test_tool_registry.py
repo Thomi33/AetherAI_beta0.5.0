@@ -19,7 +19,7 @@ from core.agent.tool_registry import (
 
 
 def test_registry_contiene_tools_base():
-    for t in ("text", "web", "shell", "launch", "vision", "codigo", "memory"):
+    for t in ("text", "web", "shell", "launch", "vision", "computer_use", "codigo", "memory"):
         assert t in TOOL_REGISTRY, f"falta tool {t}"
         assert "node" in TOOL_REGISTRY[t]
 

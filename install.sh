@@ -46,6 +46,10 @@ source crewai-env/bin/activate
 
 pip install --upgrade pip
 
+if [ -f "requirements.txt" ]; then
+    pip install -r requirements.txt
+fi
+
 if [ -f "backend/requirements.txt" ]; then
     pip install -r backend/requirements.txt
 fi

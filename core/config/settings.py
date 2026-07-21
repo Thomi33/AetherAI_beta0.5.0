@@ -43,6 +43,16 @@ BASE_AETHER     = Path("/mnt/nvme/Aether")
 # ─────────────────────────────────────────────────────────────────────
 MODELO_VISION   =  "qwen3-vl:8b"  # ← CAMBIÁ según lo que tengas instalado
 
+# ───────────────────────────────────────────────────────
+# 🖱️  COMPUTER USE (loop percepción-acción: click/escribir vía ydotool)
+# ───────────────────────────────────────────────────────
+# Límite duro de pasos por invocación. Sin esto, un objetivo mal
+# especificado (o un elemento que el VLM no encuentra) puede dejar el
+# loop dando vueltas indefinidamente gastando inferencia y arriesgando
+# clicks en lugares no deseados. 8 es conservador; subílo si ves que
+# tareas legítimas se cortan antes de tiempo.
+MAX_STEPS_COMPUTER_USE = 8
+
 """
 PARCHE para core/config/settings.py
 
@@ -152,7 +162,14 @@ OLLAMA_KEEP_ALIVE = -1   # integer recomendado; evita problemas de parsing de un
 #   num_batch, num_gpu, num_thread como antes.
 OLLAMA_GEN_OPTIONS = {
     "num_batch": 512,
-    "num_gpu": 999,      # ← forzar offload total a GPU
+    "num_gpu": 8,         # ← Ornith-35B parece tener muy pocas capas (~24) pero
+                          #   MUY anchas: ~820MB/capa. num_gpu=24 ya casi
+                          #   cargaba el modelo COMPLETO en VRAM y explotaba
+                          #   en 12GB. Ir subiendo de a 2 desde acá, no bajando
+                          #   desde un número alto.
+                          #   NOTA: config.json es la fuente real en runtime
+                          #   (ver _llm_chat en graph_nodes.py); esto es solo
+                          #   el default de arranque si el JSON no la trae.
     "num_thread": 8,
     # Ornith-native sampling (se mergea en _llm_chat)
     "temperature": 0.6,

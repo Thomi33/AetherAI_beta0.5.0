@@ -47,6 +47,9 @@ embeddings/
 screenshots/
 backups/
 
+# MCP servers config (contiene tokens en texto plano: GitHub PAT, Notion token, etc.)
+core/config/mcp_servers.json
+
 # Build
 dist/
 build/

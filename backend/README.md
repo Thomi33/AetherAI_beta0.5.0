@@ -1,6 +1,6 @@
 # Aether Backend - FastAPI
 
-API REST para el agente local Aether (CrewAI + Ollama)
+API REST para el agente local Aether (LangGraph + Ollama)
 
 ## Instalación
 
@@ -36,7 +36,7 @@ python api/main.py
 
 ## TODO
 
-- [ ] Integrar jarvis.py (CrewAI Agent)
+- [ ] Integrar nuevo loop LangGraph
 - [ ] Persistencia en DB
 - [ ] WebSocket para streaming
 - [ ] Autenticación

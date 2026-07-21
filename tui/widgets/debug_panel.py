@@ -13,7 +13,7 @@ class DebugPanel(Static):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._debug_logs = []
-        self._max_lines = 20
+        self._max_lines = 8  # debe coincidir con la altura visible del panel (#debug_panel { height: 10 } en app.py, menos 2 de borde/padding)
 
     def agregar_log(self, mensaje=None, tipo="info"):
         """Agrega una línea al panel de debug."""
