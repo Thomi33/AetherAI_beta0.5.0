@@ -4,7 +4,7 @@ Smoke test END-TO-END real (sin mocks) contra el server MCP filesystem.
 Verifica:
 1. MCPClientManager conecta de verdad vía stdio (levanta npx como subproceso).
 2. list_tools() devuelve el catálogo real de tools del server.
-3. call_tool() con una tool real devuelve datos reales de /home/thomi.
+3. call_tool() con una tool real confirma acceso a la DB runtime de Aether.
 
 Requiere:
 - core/config/mcp_servers.json con la entrada "server_filesystem" configurada.
@@ -25,6 +25,7 @@ from core.tools.mcp_client import get_mcp_manager, MCPError
 
 
 SERVER = "server_filesystem"
+RUNTIME_DB = "/home/thomi/Aether/db/current.db"
 
 
 def main():
@@ -61,16 +62,20 @@ def main():
         return
 
     # ── 3. Llamar una tool real ───────────────────────────────────────
-    # Los nombres típicos de @modelcontextprotocol/server-filesystem son
-    # list_directory / list_allowed_directories. Probamos con la que
-    # exista en el catálogo real en vez de asumir el nombre a ciegas.
+    # Preferimos metadata de current.db: SQLite es binario, así que esta es
+    # una verificación real de acceso sin intentar mostrarlo como texto.
     nombres_disponibles = [t["name"] for t in tools]
     candidata = next(
-        (n for n in ("list_directory", "list_allowed_directories") if n in nombres_disponibles),
+        (n for n in ("get_file_info", "list_directory", "list_allowed_directories") if n in nombres_disponibles),
         nombres_disponibles[0],
     )
 
-    args = {"path": "/home/thomi"} if candidata == "list_directory" else {}
+    if candidata == "get_file_info":
+        args = {"path": RUNTIME_DB}
+    elif candidata == "list_directory":
+        args = {"path": "/home/thomi/Aether/db"}
+    else:
+        args = {}
 
     print(f"\nLlamando tool real: '{candidata}' con args={args}...")
     try:

@@ -25,8 +25,8 @@ from typing import Callable
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
-from textual.widgets import Input, Label, ListItem, ListView, Static
-from textual.containers import Vertical
+from textual.widgets import Input, Label, ListItem, ListView, Static, TextArea
+from textual.containers import Vertical, Horizontal
 
 
 def _safe_id(item: str) -> str:
@@ -175,7 +175,7 @@ class _BaseSelectorScreen(Screen):
             li = ListItem(Label(label_text), id=f"item-{idx}-{_safe_id(item)}")
             if item == self._current:
                 li.add_class("active-item")
-            lv.append(li)
+            await lv.append(li)   # FIX: append es async en Textual 8.x (AwaitMount)
         if items:
             lv.index = 0
 
@@ -275,7 +275,7 @@ class AgentSelectorScreen(Screen):
             )
             if name == self._current:
                 li.add_class("active-item")
-            lv.append(li)
+            await lv.append(li)   # FIX: append es async en Textual 8.x (AwaitMount)
         if lv.children:
             lv.index = 0
 
@@ -394,7 +394,7 @@ class McpSelectorScreen(Screen):
         lv = self.query_one("#modal-list", ListView)
         await lv.clear()
         if not self._names:
-            lv.append(ListItem(Label("[dim]No results found[/dim]"), id="mcp-empty"))
+            await lv.append(ListItem(Label("[dim]No results found[/dim]"), id="mcp-empty"))
             return
         filtered = [n for n in self._names if not query or query in n.lower()]
         self._filtered = filtered
@@ -403,7 +403,7 @@ class McpSelectorScreen(Screen):
             icon = "●" if enabled else "○"
             cls = "mcp-enabled" if enabled else "mcp-disabled"
             li = ListItem(Label(f"{icon} {name}", classes=cls), id=f"mcp-{_safe_id(name)}")
-            lv.append(li)
+            await lv.append(li)   # FIX: append es async en Textual 8.x (AwaitMount)
         if lv.children:
             lv.index = 0
 
@@ -480,7 +480,7 @@ class EffortSelectorScreen(Screen):
             )
             if name == self._current:
                 li.add_class("active-item")
-            lv.append(li)
+            await lv.append(li)   # FIX: append es async en Textual 8.x (AwaitMount)
         if lv.children:
             lv.index = 0
 
@@ -521,12 +521,94 @@ COMMANDS = [
     ("/help",      "Show help"),
     ("/historial", "Ver sesión archivada"),
     ("/mcps",      "Toggle MCPs"),
+    ("/memory",    "Editar resumen de memoria"),
     ("/models",    "Switch model"),
     ("/new",       "New session"),
     ("/sesiones",  "List sessions"),
     ("/set",       "Set config value"),
     ("/themes",    "Switch theme"),
 ]
+
+
+# ─────────────────────────────────── MEMORY EDITOR ────────────────────────────────────
+
+class MemoryEditorScreen(Screen):
+    """
+    Editor del resumen acumulativo de memoria (rolling summary).
+
+    A diferencia de los selectores de arriba, esto no elige de una lista:
+    muestra el texto completo del resumen actual en un TextArea editable.
+    Ctrl+S guarda directo en resumen_memoria (sin pasar por el LLM
+    consolidador — es edición manual del usuario), Escape cierra sin guardar.
+
+    Pensálo como abrir el archivo de memoria en un editor de texto: lo que
+    Aether tiene guardado sobre vos, visible y editable a mano, en vez de un
+    dump de mensajes crudos que nadie lee.
+    """
+
+    DEFAULT_CSS = """
+    MemoryEditorScreen {
+        align: center middle;
+        background: rgba(0,0,0,0.6);
+    }
+
+    #memory-box {
+        width: 90%;
+        height: 80%;
+        background: $surface;
+        border: solid $primary;
+        padding: 0 1;
+    }
+
+    #memory-title {
+        text-style: bold;
+        color: $text;
+        border-bottom: solid $primary-darken-2;
+        height: 1;
+        margin-bottom: 1;
+    }
+
+    #memory-textarea {
+        height: 1fr;
+        border: solid $primary-darken-2;
+    }
+
+    #memory-footer {
+        height: 1;
+        margin-top: 1;
+        border-top: solid $primary-darken-2;
+        color: $text-muted;
+        padding: 0;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "dismiss_none", "Cerrar sin guardar", show=False),
+        Binding("ctrl+s", "guardar", "Guardar", show=False),
+    ]
+
+    def __init__(self, texto_actual: str, on_save: Callable[[str], None] | None = None):
+        super().__init__()
+        self._texto_actual = texto_actual
+        self._on_save = on_save
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="memory-box"):
+            yield Static("Memoria de Aether — resumen acumulativo", id="memory-title")
+            yield TextArea(self._texto_actual, id="memory-textarea")
+            yield Static("ctrl+s guardar   esc cerrar sin guardar", id="memory-footer")
+
+    def on_mount(self) -> None:
+        self.query_one("#memory-textarea", TextArea).focus()
+
+    def action_dismiss_none(self) -> None:
+        self.dismiss(None)
+
+    def action_guardar(self) -> None:
+        nuevo_texto = self.query_one("#memory-textarea", TextArea).text
+        if self._on_save:
+            self._on_save(nuevo_texto)
+        self.dismiss(nuevo_texto)
 
 
 class CommandPaletteScreen(Screen):
@@ -564,7 +646,7 @@ class CommandPaletteScreen(Screen):
                 Label(f"[bold]{cmd}[/bold]  [dim]{desc}[/dim]"),
                 id=f"cmd-{cmd.lstrip('/')}",
             )
-            lv.append(li)
+            await lv.append(li)   # FIX: append es async en Textual 8.x (AwaitMount)
         if lv.children:
             lv.index = 0
 

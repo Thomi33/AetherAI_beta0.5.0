@@ -91,7 +91,7 @@ def _print_event(type: str, message: str, **kwargs) -> None:
     print(message)
 
 
-def _llm_chat(system: str = None, user: str = None, messages: list = None, on_token=None, tools: list = None) -> str:
+def _llm_chat(system: str = None, user: str = None, messages: list = None, on_token=None, tools: list = None, min_predict: int | None = None) -> str:
     """
     Llamada directa a ollama con streaming opcional.
 
@@ -100,6 +100,12 @@ def _llm_chat(system: str = None, user: str = None, messages: list = None, on_to
     - sampling recomendado (0.6 / 0.95 / 20)
     - keep_alive
     - num_predict generoso
+
+    min_predict: piso opcional de num_predict, INDEPENDIENTE del NUM_PREDICT
+    escalado por /effort. Usado por las llamadas de planificación (detección
+    de intención, plan multi-tool, resolución anafórica, args MCP), que no
+    deben cortarse a mitad del <think> ni del JSON solo porque el usuario
+    esté en effort bajo. Si el NUM_PREDICT vigente ya es mayor, no hace nada.
     """
     if messages is None:
         if system is None or user is None:
@@ -134,6 +140,13 @@ def _llm_chat(system: str = None, user: str = None, messages: list = None, on_to
     opts["num_ctx"] = config.get("NUM_CTX", NUM_CTX)
     opts["num_predict"] = config.get("NUM_PREDICT", opts["num_predict"])
     opts["temperature"] = config.get("TEMPERATURE", opts.get("temperature", 0.6))
+
+    # Piso de planificación: independiente del NUM_PREDICT escalado por
+    # /effort (ver docstring de min_predict arriba). No reduce nunca, solo
+    # sube el presupuesto si el effort actual lo dejó por debajo del mínimo
+    # que la llamada pidió explícitamente.
+    if min_predict:
+        opts["num_predict"] = max(opts["num_predict"], min_predict)
 
     call_kwargs = {
         "model": decision_modelo.model,
@@ -212,16 +225,13 @@ def _system_prompt(mem: dict, state: "AetherState | None" = None) -> str:
     Si el Context Manager ya preparó context_slots, los usa directamente.
     Si no (fallback), construye el contexto desde cero con el tema vacío.
     """
-    from core.memory.context_builder import construir_contexto_memoria
-    from core.agent.prompts import construir_backstory
-
     if state is not None:
         slots = state.get("context_slots") or {}
         contexto = slots.get("contexto", "")
         if contexto:
             return construir_backstory(contexto)
 
-    contexto = construir_contexto_memoria(mem, tema="")
+    contexto = construir_contexto_memoria(mem)
     return construir_backstory(contexto)
 
 
@@ -234,7 +244,6 @@ def _system_prompt_sintesis(mem: dict, state: "AetherState | None" = None) -> st
     que no contiene el protocolo [SHELL] en absoluto. Evita que Ornith devuelva
     comandos crudos cuando debería sintetizar una respuesta en lenguaje natural.
     """
-    from core.memory.context_builder import construir_contexto_memoria
     from core.agent.prompts import construir_persona_sintesis
 
     if state is not None:
@@ -243,8 +252,14 @@ def _system_prompt_sintesis(mem: dict, state: "AetherState | None" = None) -> st
         if contexto:
             return construir_persona_sintesis(contexto)
 
-    contexto = construir_contexto_memoria(mem, tema="")
+    contexto = construir_contexto_memoria(mem)
     return construir_persona_sintesis(contexto)
+
+
+def _num_predict_planner() -> int:
+    """Piso de num_predict para llamadas de planificación (ver _llm_chat)."""
+    config = get_config_manager()
+    return config.get("NUM_PREDICT_PLANNER", 3072)
 
 
 def _confirmar_usuario(mensaje: str) -> bool:
@@ -281,7 +296,34 @@ _STOP_WORDS = frozenset([
     "el", "la", "los", "las", "un", "una", "por", "favor", "me",
     "con", "sin", "en", "de", "del", "al",
 ])
+_KW_SISTEMA_LOCAL_N = frozenset(_normalizar(k) for k in [
+    "disco", "espacio en disco", "espacio libre", "espacio disponible",
+    "mi home", "ram", "memoria ram", "cpu", "procesador", "caché", "cache",
+])
+_VERBOS_CONSULTA_SISTEMA_N = frozenset(_normalizar(k) for k in [
+    "escanea", "escaneá", "escanear", "revisa", "revisá", "revisar",
+    "chequea", "chequeá", "chequear", "mide", "medí", "medir",
+    "consume", "ocupa", "ocupan", "libera", "liberar", "cuanto", "cuánto",
+])
 
+def _parece_consulta_sistema_local(orden_lower: str) -> bool:
+    """
+    Prioriza 'shell' sobre 'web' cuando la orden es sobre el HARDWARE/estado
+    real del equipo (disco, RAM, CPU, caché). Web nunca puede responder esto
+    con datos reales — solo shell (du/df/free) puede. Existe porque keywords
+    genéricas como 'cuánto' antes empujaban esto a 'web', que terminaba
+    reportando cifras de artículos genéricos como si fueran mediciones reales
+    del equipo del usuario.
+    """
+    o = _normalizar(orden_lower)
+    tiene_sustantivo = any(
+        kw in o for kw in _KW_SISTEMA_LOCAL_N
+    )
+    tiene_verbo = any(
+        re.search(rf"\b{re.escape(v)}\b", o) if " " not in v else v in o
+        for v in _VERBOS_CONSULTA_SISTEMA_N
+    )
+    return tiene_sustantivo and tiene_verbo
 
 # ══════════════════════════════════════════════════════════════════════
 # KEYWORDS EDITABLES (cargadas desde JSON, sin tocar código Python)
@@ -313,7 +355,7 @@ def _cargar_keywords_config() -> dict:
             "vision": ["captura de pantalla"],
             "launch": ["ejecuta", "abre", "lanza", "inicia", "corre"],
             "launch_excluye": ["comando", "caché", "cache"],
-            "memory": ["tu memoria", "mi memoria"],
+            "memory": ["mostrame tu memoria", "mostrame mi memoria", "que recuerdas"],
             "anaforico": ["ejecutalo", "hacelo", "dale"],
         }
 
@@ -327,7 +369,38 @@ _KW_LAUNCH_N         = frozenset(_normalizar(k) for k in _KEYWORDS.get("launch",
 _KW_LAUNCH_EXCLUYE_N = frozenset(_normalizar(k) for k in _KEYWORDS.get("launch_excluye", []))
 _KW_MEMORY_N         = frozenset(_normalizar(k) for k in _KEYWORDS.get("memory", []))
 _KW_ANAFORICO_N      = frozenset(_normalizar(k) for k in _KEYWORDS.get("anaforico", []))
+_KW_CORRECCION_N     = frozenset(_normalizar(k) for k in _KEYWORDS.get("correccion", []))
+_KW_ACCION_RESULTADO_N = frozenset(_normalizar(k) for k in _KEYWORDS.get("accion_resultado", []))
 _KW_MCP_N = frozenset(["usando mcp", "via mcp", "con mcp", "model context protocol", "mcp"])
+
+
+def _parece_correccion_usuario(orden_lower: str) -> bool:
+    """
+    Detector determinista (sin LLM) para mensajes donde el usuario está
+    corrigiendo, acusando o desmintiendo a Aether ("te caché", "me
+    mentiste", "eso no es cierto"...), en vez de pidiendo una acción nueva.
+
+    Existe porque estos mensajes NO deben pasar por el clasificador LLM de
+    intención: un mensaje como "Buscaste en la web... ejecutaste un comando
+    en shell..." contiene literalmente las palabras "web"/"shell", y con el
+    modelo local (cuantizado agresivo) eso alcanza para que la clasificación
+    dispare una tool real (web/shell) sobre un texto que en realidad es un
+    reclamo dirigido a Aether, no una orden. El bug concreto que motivó esto:
+    ese texto terminó ejecutando una búsqueda web literal con el mensaje
+    completo como query, matcheando resultados espurios (letra de canción).
+
+    Prioridad: se chequea ANTES de _detectar_intent_keywords / clasificación
+    LLM. Si matchea, el planner rutea directo a 'text' (conversación pura,
+    sin tools) para que Ornith responda/aclare sin efectos secundarios.
+    """
+    if not orden_lower or not _KW_CORRECCION_N:
+        return False
+    o = _normalizar(orden_lower)
+    return any(
+        re.search(rf"\b{re.escape(x)}\b", o) if " " not in x else x in o
+        for x in _KW_CORRECCION_N
+    )
+
 
 def _inferir_args_mcp(orden: str, manager) -> dict:
     """
@@ -382,10 +455,19 @@ Reglas CRÍTICAS:
 - Si no hay una tool obvia, respondé {{"server": "", "name": "", "arguments": {{}}}}"""
 
     try:
-        raw = _llm_chat(
-            system="Eres un selector de herramientas MCP experto. Respondé SOLO JSON válido.",
-            user=prompt
-        )
+        try:
+            raw = _llm_chat(
+                system="Eres un selector de herramientas MCP experto. Respondé SOLO JSON válido.",
+                user=prompt,
+                min_predict=_num_predict_planner(),
+            )
+        except TypeError as exc:
+            if "min_predict" not in str(exc):
+                raise
+            raw = _llm_chat(
+                system="Eres un selector de herramientas MCP experto. Respondé SOLO JSON válido.",
+                user=prompt,
+            )
         _, contenido = _parse_ornith_thinking(raw)
 
         # Limpiar markdown
@@ -394,7 +476,13 @@ Reglas CRÍTICAS:
         elif "```" in contenido:
             contenido = contenido.split("```", 1)[1].split("```", 1)[0].strip()
 
-        data = json.loads(contenido)
+        try:
+            data = json.loads(contenido)
+        except Exception:
+            # Los modelos locales suelen anteponer una frase o un bloque think;
+            # reutilizamos el parser balanceado del planner antes de abandonar
+            # una tool MCP perfectamente seleccionable.
+            data = _extraer_json_objeto(contenido)
 
         # Validar estructura
         if isinstance(data, dict):
@@ -467,7 +555,7 @@ def recargar_keywords_config() -> None:
     Recarga keywords_config.json en caliente, sin reiniciar el proceso.
     Útil si ajustás el JSON mientras Aether está corriendo (TUI persistente).
     """
-    global _KEYWORDS, _KW_WEB_N, _KW_VISION_N, _KW_COMPUTER_USE_N, _KW_LAUNCH_N, _KW_LAUNCH_EXCLUYE_N, _KW_MEMORY_N, _KW_ANAFORICO_N, _KW_MCP_N
+    global _KEYWORDS, _KW_WEB_N, _KW_VISION_N, _KW_COMPUTER_USE_N, _KW_LAUNCH_N, _KW_LAUNCH_EXCLUYE_N, _KW_MEMORY_N, _KW_ANAFORICO_N, _KW_CORRECCION_N, _KW_ACCION_RESULTADO_N, _KW_MCP_N
     _KEYWORDS = _cargar_keywords_config()
     _KW_WEB_N            = frozenset(_normalizar(k) for k in _KEYWORDS.get("web", []))
     _KW_VISION_N         = frozenset(_normalizar(k) for k in _KEYWORDS.get("vision", []))
@@ -476,6 +564,8 @@ def recargar_keywords_config() -> None:
     _KW_LAUNCH_EXCLUYE_N = frozenset(_normalizar(k) for k in _KEYWORDS.get("launch_excluye", []))
     _KW_MEMORY_N         = frozenset(_normalizar(k) for k in _KEYWORDS.get("memory", []))
     _KW_ANAFORICO_N      = frozenset(_normalizar(k) for k in _KEYWORDS.get("anaforico", []))
+    _KW_CORRECCION_N     = frozenset(_normalizar(k) for k in _KEYWORDS.get("correccion", []))
+    _KW_ACCION_RESULTADO_N = frozenset(_normalizar(k) for k in _KEYWORDS.get("accion_resultado", []))
     _KW_MCP_N = frozenset(["usando mcp", "via mcp", "con mcp", "model context protocol", "mcp"])
     print("🔄 [PLANNER]: keywords_config.json recargado.")
 
@@ -485,21 +575,19 @@ def recargar_keywords_config() -> None:
 # ══════════════════════════════════════════════════════════════════════
 
 def _detectar_intent_keywords(orden_lower: str) -> str | None:
-    """
-    Detección determinista de intención por keywords (sin LLM).
-    Prioridad: memory → computer_use → vision → launch → web → codigo.
-    Retorna el nombre de la tool o None si no hay match.
-    """
     o = _normalizar(orden_lower)
 
     def _match_palabra(keywords: frozenset[str]) -> bool:
-        # Multi-palabra ("tu memoria"): matching directo por substring tiene sentido.
-        # Una sola palabra ("ejecuta"): exigir límite de palabra para no matchear
-        # dentro de otra palabra (ej. "ejecutálo" no debe activar "ejecuta").
         return any(
             re.search(rf"\b{re.escape(x)}\b", o) if " " not in x else x in o
             for x in keywords
         )
+
+    # PRIORIDAD MÁXIMA: preguntas sobre el hardware/estado real del equipo
+    # (disco, RAM, CPU, caché) van a shell, nunca a web -- ver docstring de
+    # _parece_consulta_sistema_local.
+    if _parece_consulta_sistema_local(orden_lower):
+        return "shell"
 
     if _match_palabra(_KW_MEMORY_N):
         return "memory"
@@ -518,6 +606,68 @@ def _detectar_intent_keywords(orden_lower: str) -> str | None:
     return None
 
 
+def _clasificar_intent_llm(orden: str, mem: dict) -> str:
+    """Nombre estable del clasificador LLM, también útil para tests y plugins."""
+    return _decidir_intencion_con_razonamiento(orden, mem)
+
+
+def _es_charla_simple(orden: str) -> bool:
+    """Evita una inferencia de planificación para saludos inequívocos."""
+    texto = _normalizar(orden).strip(" !?.¿¡,;")
+    return texto in {
+        "hola", "buenas", "buen dia", "buenos dias", "buenas tardes",
+        "buenas noches", "como estas", "gracias", "ok",
+    }
+
+
+def _mcp_es_preferido_para_objetivo(orden: str, manager) -> bool:
+    """Indica si MCP es el medio preferido para cumplir el objetivo.
+
+    No depende de que una keyword genérica (por ejemplo ``busca``) gane antes.
+    MCP se prioriza cuando el usuario lo pidió expresamente o cuando menciona
+    una fuente que el catálogo conectado puede resolver de forma nativa.
+    """
+    texto = _normalizar(orden)
+    if any(kw in texto for kw in _KW_MCP_N):
+        return True
+
+    try:
+        catalogo = manager.list_all_tools()
+    except Exception:
+        return False
+    if not isinstance(catalogo, dict):
+        return False
+
+    pistas_por_server = {
+        "github": ("github", "repositorio", "repos", "pull request", "issue"),
+        "notion": ("notion", "nota", "notas", "pagina"),
+        "server_filesystem": ("directorio", "directorios", "archivos locales", "sistema de archivos"),
+    }
+    for server, pistas in pistas_por_server.items():
+        if catalogo.get(server) and any(pista in texto for pista in pistas):
+            return True
+    return False
+
+
+def _orden_parece_objetivo_mcp(orden: str) -> bool:
+    """Filtro sin I/O: evita iniciar servidores MCP para una charla normal."""
+    texto = _normalizar(orden)
+    return any(kw in texto for kw in _KW_MCP_N) or any(
+        pista in texto for pista in (
+            "github", "repositorio", "repos", "pull request", "issue",
+            "notion", "archivos locales", "sistema de archivos",
+        )
+    )
+
+
+def _plan_mcp_para_objetivo(orden: str, manager) -> list[dict] | None:
+    """Construye el plan MCP mínimo para un objetivo, sin inventar servidores."""
+    args = _inferir_args_mcp(orden, manager)
+    if not args.get("server") or not args.get("name"):
+        return None
+    return [{"tool": "mcp", "instruccion": orden, "args": args}]
+
+
 _CONECTORES_MULTITOOL = (
     " y luego", " luego", " después", " despues", " entonces",
     " y guarda", " y guárdalo", " y guardalo", " y crea", " y escribe", ";",
@@ -532,11 +682,20 @@ def _parece_multitool(orden_lower: str) -> bool:
     """
     Heurística determinista para decidir si vale la pena pedirle al LLM un
     plan multi-tool.
+
+    Dos caminos:
+    1. Conector explícito ("y luego", ";", etc.) + 2 categorías de keywords
+       distintas — el camino original.
+    2. Web/código + una categoría nueva, "acción sobre el resultado"
+       (arregla, soluciona, instala, aplica el fix, etc.), SIN exigir un
+       conector explícito. Pedidos reales como "buscá cómo arreglar X e
+       instalalo" no traen un " y luego" literal — el encadenamiento está
+       implícito en el verbo de acción, no en una conjunción. Sin este
+       camino, _parece_multitool nunca daba True para el patrón "buscar un
+       fix y aplicarlo", y el planner nunca le pegáa al LLM por un plan
+       multi-paso: se quedaba en un solo paso 'web' que nunca ejecuta nada.
     """
     o = _normalizar(orden_lower)
-    tiene_conector = any(_normalizar(c) in o for c in _CONECTORES_MULTITOOL)
-    if not tiene_conector:
-        return False
 
     categorias = 0
     if any(x in o for x in _KW_WEB_N):
@@ -549,6 +708,19 @@ def _parece_multitool(orden_lower: str) -> bool:
         categorias += 1
     if any(_normalizar(p) in o for p in _KW_PERSISTENCIA):
         categorias += 1
+
+    tiene_accion_resultado = any(x in o for x in _KW_ACCION_RESULTADO_N)
+    if tiene_accion_resultado:
+        categorias += 1
+
+    # Camino 2: web/código + acción-sobre-resultado alcanza sin conector.
+    if tiene_accion_resultado and categorias >= 2:
+        return True
+
+    # Camino 1 (original): requiere conector explícito.
+    tiene_conector = any(_normalizar(c) in o for c in _CONECTORES_MULTITOOL)
+    if not tiene_conector:
+        return False
     return categorias >= 2
 
 
@@ -641,26 +813,12 @@ def _planner_llm(orden: str, mem: dict) -> list[dict] | None:
     al contrato {"tool","instruccion","args"} o None si falla.
     """
     import json
-    from core.tools.mcp_client import get_mcp_manager
-    mcp_manager = get_mcp_manager()
-    # Generas el string condensado
-    mcp_catalog = obtener_catalogo_mcp_condensado(mcp_manager)
-    
-    # Detectar si es una orden MCP single-tool y generar args automáticamente
-    orden_lower = orden.lower()
-    if any(kw in _normalizar(orden_lower) for kw in _KW_MCP_N):
-        # El usuario pidió MCP explícitamente - intentar inferir server/tool
-        # Para "listame directorios", usar filesystem:list_directory
-        _print_event("planner_mcp_detected", f"Orden MCP detectada, generando args para filesystem:list_directory")
-        return [{
-            "tool": "mcp",
-            "instruccion": orden,
-            "args": {
-                "server": "server_filesystem",
-                "name": "list_directory",
-                "arguments": {"path": "/home/thomi"}
-            }
-        }]
+    # No levantar/conectar todos los servidores para una tarea que no tiene
+    # ninguna pista MCP. Para objetivos MCP el catálogo sí entra al prompt.
+    mcp_catalog = "No se consultó catálogo MCP para este objetivo."
+    if _orden_parece_objetivo_mcp(orden):
+        from core.tools.mcp_client import get_mcp_manager
+        mcp_catalog = obtener_catalogo_mcp_condensado(get_mcp_manager())
     
     prompt = f"""Analiza si esta tarea requiere VARIAS herramientas encadenadas.
 Herramientas disponibles:
@@ -676,9 +834,11 @@ Servidores y herramientas MCP activas actualmente:
 text: respuesta directa
 IMPORTANTE: Para guardar resultados en archivo usa SIEMPRE "file_write", NUNCA "shell" con echo/tee.
 El nodo file_write toma automáticamente el resultado del paso anterior, no necesitas especificar el contenido.
+IMPORTANTE: Si la tarea es "buscar cómo resolver/arreglar/instalar algo Y HACERLO" (el usuario espera que lo ejecutes, no solo que le cuentes qué encontraste), armá un plan de VARIOS pasos: primero "web" para buscar la solución, después "shell" o "codigo" para aplicarla. NO te quedes en un solo paso "web" cuando la tarea pide explícita o implícitamente una acción sobre lo encontrado.
 Tarea: {orden}
 Si necesita UNA sola herramienta, responde: {{"multi_tool": false}}
 Si necesita VARIAS en secuencia, responde EXACTAMENTE este formato:
+Ejemplo 1 (buscar + guardar):
 {{
  "multi_tool ": true,
  "pasos ": [
@@ -686,11 +846,26 @@ Si necesita VARIAS en secuencia, responde EXACTAMENTE este formato:
 {{ "tool ":  "file_write ",  "instruccion ":  "guardar el resultado en un archivo ",  "args ": {{ "filename ":  "precio_x.txt "}}}}
 ]
 }}
+Ejemplo 2 (buscar un fix + ejecutarlo — usar este patrón cuando el usuario pide arreglar/solucionar/instalar algo):
+{{
+ "multi_tool": true,
+ "pasos": [
+{{ "tool": "web", "instruccion": "buscar cómo resolver el error X", "args": {{ "query": "error X fix" }} }},
+{{ "tool": "shell", "instruccion": "ejecutar el comando encontrado que resuelve el error X", "args": {{}} }}
+]
+}}
 Responde SOLO el JSON, sin explicaciones."""
 
     raw = ""
     try:
-        raw = _llm_chat(system=_system_prompt(mem), user=prompt).strip()
+        try:
+            raw = _llm_chat(system=_system_prompt(mem), user=prompt, min_predict=_num_predict_planner()).strip()
+        except TypeError as exc:
+            # Compatibilidad con adaptadores y tests que todavía exponen la
+            # firma previa de _llm_chat sin ``min_predict``.
+            if "min_predict" not in str(exc):
+                raise
+            raw = _llm_chat(system=_system_prompt(mem), user=prompt).strip()
     except Exception as e:
         print(f"   └─ [PLANNER]: fallo al invocar al LLM ({e})")
         return None
@@ -856,7 +1031,12 @@ Orden actual: {orden}
 Respuesta:"""
 
     try:
-        raw = _llm_chat(system=system, user=user).strip().lower()
+        try:
+            raw = _llm_chat(system=system, user=user, min_predict=_num_predict_planner()).strip().lower()
+        except TypeError as exc:
+            if "min_predict" not in str(exc):
+                raise
+            raw = _llm_chat(system=system, user=user).strip().lower()
     except Exception as e:
         print(f"   └─ [PLANNER]: _confirmar_referencia_anaforica_llm falló ({e}); default 'no' para no bloquear.")
         return False
@@ -1083,7 +1263,7 @@ Ejemplos:
 "cuáles son mis notas de notion sobre X" → mcp
 Tu razonamiento:"""
     try:
-         raw = _llm_chat(system=system, user=user).strip()
+         raw = _llm_chat(system=system, user=user, min_predict=_num_predict_planner()).strip()
     except Exception as e:
         print(f"   └─ [PLANNER]: razonamiento de intención falló ({e}); usando 'text'.")
         return "text"
@@ -1119,6 +1299,20 @@ def node_planner(state: AetherState) -> dict:
     mem = normalizar_mem(state.get("mem"))
 
     print("\n🧠 [PLANNER]: Decidiendo plan de ejecución con razonamiento del modelo...")
+
+    if _es_charla_simple(orden):
+        return _plan_activado([{"tool": "text", "instruccion": orden, "args": {}}], orden, mem)
+
+    # CASO -1: CORRECCIÓN / RECLAMO DEL USUARIO HACIA AETHER
+    # Chequeo determinista PREVIO a cualquier clasificación LLM. Un mensaje
+    # como "me mentiste, buscaste en la web pero ejecutaste un comando en
+    # shell" contiene palabras que el clasificador LLM (modelo local muy
+    # cuantizado) puede leer como pedido real de tool, cuando en realidad es
+    # un reclamo dirigido a Aether. Enviarlo directo a 'text' evita activar
+    # web/shell/etc. con contenido conversacional como si fuera una orden.
+    if _parece_correccion_usuario(orden_lower):
+        print("   └─ Reclamo/corrección del usuario detectado → routing directo a text (sin tools).")
+        return _plan_activado([{"tool": "text", "instruccion": orden, "args": {}}], orden, mem)
 
     # ═══════════════════════════════════════════════════════════════════
     # CASO 0: RESOLUCIÓN DE AMBIGÜEDAD ANAFÓRICA
@@ -1213,15 +1407,42 @@ def node_planner(state: AetherState) -> dict:
     if intent:
         print(f"   └─ Intención detectada por keywords: {intent}")
     else:
-        intent = _decidir_intencion_con_razonamiento(orden, mem)
+        intent = _clasificar_intent_llm(orden, mem)
     multi = _parece_multitool(orden_lower)
+
+    # MCP debe competir por capacidad, antes de que una keyword genérica
+    # ("buscá", "lista", "nota") fuerce web/shell. Así "buscá mis issues
+    # de GitHub" y "usando MCP ..." toman la fuente conectada real.
+    manager_mcp = None
+    if _orden_parece_objetivo_mcp(orden):
+        from core.tools.mcp_client import get_mcp_manager
+        manager_mcp = get_mcp_manager()
+    if manager_mcp is not None and _mcp_es_preferido_para_objetivo(orden, manager_mcp):
+        plan_mcp = _plan_mcp_para_objetivo(orden, manager_mcp)
+        if plan_mcp:
+            _KW_PERSISTENCIA_N = frozenset(_normalizar(p) for p in _KW_PERSISTENCIA)
+            if any(p in _normalizar(orden_lower) for p in _KW_PERSISTENCIA_N):
+                m_fname = re.search(r'[\w\-]+\.(?:txt|md|json|csv|log)', orden)
+                filename = m_fname.group(0) if m_fname else "resultado_mcp.txt"
+                plan_mcp.append({
+                    "tool": "file_write",
+                    "instruccion": f"guardar resultado en {filename}",
+                    "args": {"filename": filename},
+                })
+            print(f"   └─ Objetivo resuelto con MCP: {plan_mcp[0]['args']['server']}:{plan_mcp[0]['args']['name']}")
+            return _plan_activado(plan_mcp, orden, mem)
+        if any(kw in _normalizar(orden) for kw in _KW_MCP_N):
+            # No reemplazar silenciosamente una petición explícita de MCP por
+            # web/shell: node_mcp devolverá un diagnóstico claro y accionable.
+            return _plan_activado([{"tool": "mcp", "instruccion": orden, "args": {}}], orden, mem)
 
     # CASO ESPECIAL: MCP con inferencia de args
     if intent == "mcp" and not multi:
         print(f"   └─ Intención decidida por razonamiento del modelo: {intent}")
-        from core.tools.mcp_client import get_mcp_manager
-        manager = get_mcp_manager()
-        args_mcp = _inferir_args_mcp(orden, manager)
+        if manager_mcp is None:
+            from core.tools.mcp_client import get_mcp_manager
+            manager_mcp = get_mcp_manager()
+        args_mcp = _inferir_args_mcp(orden, manager_mcp)
         print(f"   └─ Args MCP inferidos: {args_mcp}")
         return _plan_activado(
             [{"tool": "mcp", "instruccion": orden, "args": args_mcp}],
@@ -1232,29 +1453,6 @@ def node_planner(state: AetherState) -> dict:
     if intent and not multi:
         print(f"   └─ Intención decidida por razonamiento del modelo: {intent}")
         return _plan_activado([{"tool": intent, "instruccion": orden}], orden, mem)
-
-    # ═══════════════════════════════════════════════════════════════════
-    # CASO 1.5: PERSISTENCIA + MULTI-TOOL
-    # ═══════════════════════════════════════════════════════════════════
-    _KW_PERSISTENCIA_N = frozenset(_normalizar(p) for p in _KW_PERSISTENCIA)
-    o_norm = _normalizar(orden_lower)
-    tiene_persistencia = any(p in o_norm for p in _KW_PERSISTENCIA_N)
-
-    if multi and tiene_persistencia and intent in ("web", "vision", "codigo"):
-        import re as _re
-        m_fname = _re.search(r'[\w\-]+\.(?:txt|md|json|csv|py|sh|html)', orden)
-        filename = m_fname.group(0) if m_fname else f"{intent}_resultado.txt"
-
-        _TOOLS_CONTENIDO_CRUDO = frozenset({"web", "vision"})
-
-        plan_det = [{"tool": intent, "instruccion": orden, "args": {}}]
-        if intent in _TOOLS_CONTENIDO_CRUDO:
-            plan_det.append({"tool": "extract", "instruccion": orden, "args": {}})
-        plan_det.append({"tool": "file_write", "instruccion": f"guardar resultado en {filename}", "args": {"filename": filename}})
-
-        pasos_desc = " → ".join(p["tool"] for p in plan_det)
-        print(f"   └─ Plan determinista (razonamiento + persistencia): {pasos_desc}")
-        return _plan_activado(plan_det, orden, mem)
 
     # ═══════════════════════════════════════════════════════════════════
     # CASO MULTI-TOOL: planner LLM
@@ -1272,11 +1470,27 @@ def node_planner(state: AetherState) -> dict:
         except Exception as e:
             print(f"   └─ Error en plan multi-tool ({e}).")
 
+    # Si el modelo no pudo proponer un plan válido, conservar un fallback
+    # determinista para la persistencia en vez de abandonar el objetivo.
+    _KW_PERSISTENCIA_N = frozenset(_normalizar(p) for p in _KW_PERSISTENCIA)
+    tiene_persistencia = any(p in _normalizar(orden_lower) for p in _KW_PERSISTENCIA_N)
+    if multi and tiene_persistencia and intent in ("web", "vision", "codigo"):
+        m_fname = re.search(r'[\w\-]+\.(?:txt|md|json|csv|py|sh|html)', orden)
+        filename = m_fname.group(0) if m_fname else f"{intent}_resultado.txt"
+        plan_det = [
+            {"tool": intent, "instruccion": orden, "args": {}},
+            {"tool": "file_write", "instruccion": f"guardar resultado en {filename}", "args": {"filename": filename}},
+        ]
+        print(f"   └─ Plan de respaldo para persistir: {intent} → file_write")
+        return _plan_activado(plan_det, orden, mem)
+
     # ═══════════════════════════════════════════════════════════════════
     # FALLBACK
     # ═══════════════════════════════════════════════════════════════════
     print("   └─ Decisión final por razonamiento del modelo...")
-    tool_fallback = _decidir_intencion_con_razonamiento(orden, mem)
+    # Si ya hay una intención determinista no volvemos a gastar otra
+    # inferencia (ni dejamos al agente bloqueado si el modelo está frío).
+    tool_fallback = intent or _clasificar_intent_llm(orden, mem)
     print(f"   └─ Plan de 1 paso (razonamiento): tool={tool_fallback}")
     return _plan_activado([{"tool": tool_fallback, "instruccion": orden}], orden, mem)
 
@@ -1315,6 +1529,53 @@ def node_router(state: AetherState) -> dict:
 # NODO: WEB — proveedor de datos puro
 # ══════════════════════════════════════════════════════════════════════
 
+def _generar_query_busqueda(orden: str) -> str:
+    """
+    Convierte una orden conversacional en una query de búsqueda corta.
+
+    Antes, node_web pasaba `orden` crudo (incluso párrafos largos, o
+    mensajes conversacionales/acusatorios que igual llegaron acá por un
+    mal-routing) directo a buscar_web.invoke(). Un motor de búsqueda
+    recibiendo un párrafo completo como "Te caché, te caché. Buscaste en
+    la web..." puede matchear por similitud textual con resultados
+    totalmente ajenos (el bug real: terminó trayendo la letra de una
+    canción). Si la orden es corta ya es una query razonable; si es larga,
+    se le pide al LLM que la condense a keywords de búsqueda.
+    """
+    texto = (orden or "").strip()
+    if not texto:
+        return texto
+    # Antes: <=8 palabras pasaban directo sin razonar. Bajado a 3 — con el
+    # modelo ya cargado en VRAM (keep_alive=-1) el costo extra de esta
+    # llamada es mínimo, y priorizar precisión de búsqueda vale más que
+    # ahorrarse una inferencia chica. Solo lo genuinamente trivial (una
+    # palabra suelta, un nombre propio corto) se pasa tal cual.
+    if len(texto.split()) <= 3:
+        return texto
+
+    try:
+        raw = _llm_chat(
+            system=(
+                "Sos un generador de queries de búsqueda. A partir del mensaje "
+                "del usuario, devolvé SOLO la query de búsqueda (3 a 8 palabras "
+                "clave), sin explicaciones, sin comillas, sin puntuación final. "
+                "Si el mensaje es un reclamo, charla o no contiene un tema de "
+                "búsqueda real, devolvé la cadena vacía."
+            ),
+            user=f"Mensaje: {texto}\n\nQuery de búsqueda:",
+            min_predict=64,
+        ).strip()
+        _, query = _parse_ornith_thinking(raw)
+        query = query.strip().strip('"').strip("'")
+        if query and len(query.split()) <= 12:
+            return query
+    except Exception as e:
+        print(f"   └─ ⚠️  [WEB]: no se pudo generar query corta ({e}), usando fallback local.")
+
+    palabras = [w for w in _normalizar(texto).split() if w not in _STOP_WORDS and len(w) > 2]
+    return " ".join(palabras[:8]) or texto
+
+
 def node_web(state: AetherState) -> dict:
     """
     Búsqueda web + lectura de URL.
@@ -1322,9 +1583,12 @@ def node_web(state: AetherState) -> dict:
     para que Ornith (plan_synthesizer) los procese.
     """
     orden = state["orden"]
+    query = _generar_query_busqueda(orden)
 
     print("\n🔍 [WEB]: Buscando...")
-    resultados = buscar_web.invoke(orden)
+    if query != orden:
+        print(f"   └─ [WEB]: Query generada: '{query}'")
+    resultados = buscar_web.invoke(query)
 
     urls = re.findall(r"URL:\s*(https?://\S+)", resultados)
     contenido_url = ""
@@ -1861,51 +2125,95 @@ def _terminos_de_orden(orden: str) -> list[str]:
     return [w for w in orden.lower().split() if w not in stop and len(w) > 2]
 
 
+_VERBOS_LANZAMIENTO_RE = re.compile(
+    r"\b(ejecut\w*|abr\w*|lanz\w*|inici\w*|corr\w*|arranc\w*)\b"
+)
+_CORTE_CLAUSULA_RE = re.compile(
+    r"\b(y luego|y que|luego|despues|despu\u00e9s)\b|[,;]"
+)
+
+
+def _limpiar_ruido_programa(texto: str) -> str:
+    """Quita verbos/meta/art\u00edculos de un fragmento de orden.
+    Compartido entre el path 'ventana tras el verbo' y el fallback de
+    orden completa, para no duplicar las mismas reglas dos veces.
+    """
+    o = texto
+    for palabra in ("quiero ejecutar", "quiero abrir", "necesito", "por favor",
+                    "dale", "haceme", "hazme", "haz", " me ", "ahora", "ya"):
+        o = o.replace(palabra, " ")
+    for palabra in ("flatpak", "mediante flatpak", "por flatpak", "esta instalado mediante flatpak",
+                    "instalado con flatpak", "mediante", "instalado"):
+        o = o.replace(palabra, " ")
+    o = re.sub(r"\bprism\s*launcher\b", "prismlauncher", o)
+    o = re.sub(r"\bprism-launcher\b", "prismlauncher", o)
+    o = re.sub(r"\b(el|la|los|las|un|una|este|esta|el\s+programa|la\s+app)\b", " ", o)
+    return o
+
+
+def _tokens_programa(texto: str) -> list[str]:
+    """Tokeniza un fragmento ya limpio y filtra genéricos. Devuelve los
+    tokens en el ORDEN en que aparecen (no se reordenan acá).
+
+    NOTA: el corte de cláusula en _CORTE_CLAUSULA_RE NO incluye el punto
+    ('.') a propósito — un ID de flatpak tipo org.mozilla.firefox tiene
+    puntos, y cortar ahí lo trunca a solo 'org'.
+    """
+    m = re.search(r"\b([a-z0-9_][a-z0-9_.-]*\.[a-z0-9_.-]+\.[a-z0-9_.-]+)\b", texto)
+    if m:
+        return [m.group(1)]
+    tokens = re.findall(r"[a-z0-9][a-z0-9._-]{2,}", texto)
+    genericos = {"programa", "app", "aplicacion", "juego", "lanzador", "launcher", "binario", "ejecutable"}
+    return [t for t in tokens if t not in genericos and len(t) > 2]
+
+
 def _extraer_nombre_programa(orden: str) -> str:
     """Extrae el nombre del programa que el usuario quiere lanzar.
     Soporta "ejecuta prism launcher", "abre prismlauncher", IDs de flatpak, etc.
+
+    Prioriza el texto INMEDIATAMENTE DESPUÉS del verbo de lanzamiento
+    (ej. "abras Sober" -> "sober"), cortando en la siguiente cláusula
+    ("y que...", "y luego...", coma/punto y coma). Antes se tokenizaba la
+    orden ENTERA y se devolvía el token más largo, lo que hacía ganar a
+    palabras sin relación con el pedido (ej. "aburrido" le ganaba a
+    "sober" por tener más caracteres). También se reconocen ahora
+    conjugaciones del verbo ("abras", "corré", etc.) y no solo el
+    infinitivo/imperativo literal.
     """
     if not orden:
         return ""
 
     o = " " + orden.lower() + " "
 
-    # Quitar verbos y meta de lanzamiento
-    for palabra in ("ejecuta", "abre", "lanza", "inicia", "corre", "arranca", "quiero ejecutar",
-                    "quiero abrir", "necesito", "por favor", "dale", "haz", "haceme"):
-        o = o.replace(palabra, " ")
+    m_verbo = _VERBOS_LANZAMIENTO_RE.search(o)
+    if m_verbo:
+        ventana = o[m_verbo.end():]
+        corte = _CORTE_CLAUSULA_RE.search(ventana)
+        if corte:
+            ventana = ventana[:corte.start()]
+        ventana = _limpiar_ruido_programa(ventana)
+        tokens = _tokens_programa(ventana)
+        if tokens:
+            # Primero en orden de aparición (pegado al verbo), NO por
+            # longitud.
+            return tokens[0]
 
-    # Meta de flatpak
-    for palabra in ("flatpak", "mediante flatpak", "por flatpak", "esta instalado mediante flatpak",
-                    "instalado con flatpak", "mediante", "instalado"):
-        o = o.replace(palabra, " ")
+    # Fallback: sin verbo reconocible en la orden, o sin tokens útiles
+    # tras el recorte por cláusula. Se conserva el comportamiento
+    # histórico (heurística sobre la orden completa) como red de
+    # seguridad, no como camino principal.
+    o_full = _limpiar_ruido_programa(o)
+    for verbo_literal in ("ejecuta", "abre", "lanza", "inicia", "corre", "arranca"):
+        o_full = o_full.replace(verbo_literal, " ")
+    tokens_full = _tokens_programa(o_full)
 
-    # Normalizaciones conocidas
-    o = re.sub(r"\bprism\s*launcher\b", "prismlauncher", o)
-    o = re.sub(r"\bprism-launcher\b", "prismlauncher", o)
-
-    # Quitar artículos y ruido
-    o = re.sub(r"\b(el|la|los|las|un|una|este|esta|el\s+programa|la\s+app)\b", " ", o)
-
-    # Buscar algo que parezca ID completo de flatpak (org.foo.Bar)
-    m = re.search(r"\b([a-z0-9_][a-z0-9_.-]*\.[a-z0-9_.-]+\.[a-z0-9_.-]+)\b", o)
-    if m:
-        return m.group(1)
-
-    # Extraer tokens tipo programa
-    tokens = re.findall(r"[a-z0-9][a-z0-9._-]{2,}", o)
-    # Filtrar genéricos
-    genericos = {"programa", "app", "aplicacion", "juego", "lanzador", "launcher", "binario", "ejecutable"}
-    tokens = [t for t in tokens if t not in genericos and len(t) > 2]
-
-    if not tokens:
+    if not tokens_full:
         # último recurso: última palabra significativa
         palabras = [w.strip(".,;:") for w in orden.lower().split() if len(w) > 2]
         return palabras[-1] if palabras else orden.strip().lower()
 
-    # Preferir el token más largo o el último relevante
-    tokens.sort(key=len, reverse=True)
-    return tokens[0]
+    tokens_full.sort(key=len, reverse=True)
+    return tokens_full[0]
 
 
 def _buscar_flatpak_por_nombre(nombre: str) -> str | None:
@@ -2551,7 +2859,6 @@ def _system_prompt_chat(mem: dict, state: "AetherState | None" = None) -> str:
     ese prompt enseña el protocolo de ejecución, pero node_text no tiene
     plomería para extraer y correr el comando.
     """
-    from core.memory.context_builder import construir_contexto_memoria
     from core.agent.prompts import construir_persona_chat
 
     if state is not None:
@@ -2560,7 +2867,7 @@ def _system_prompt_chat(mem: dict, state: "AetherState | None" = None) -> str:
         if contexto:
             return construir_persona_chat(contexto)
 
-    contexto = construir_contexto_memoria(mem, tema="")
+    contexto = construir_contexto_memoria(mem)
     return construir_persona_chat(contexto)
 
 
@@ -2621,18 +2928,41 @@ def node_text(state: AetherState) -> dict:
 
 def node_memory(state: AetherState) -> dict:
     """Procesa comandos especiales de memoria sin LLM."""
-    import json
     orden = state["orden"]
     mem   = normalizar_mem(state.get("mem"))
     o     = _normalizar(orden).strip()
     resp  = ""
 
-    _MOSTRAR = ("muestrame tu memoria", "muestrame mi memoria", "tu memoria",
-                "mi memoria", "que recuerdas", "ver memoria", "mostrar memoria",
+    _MOSTRAR = ("muestrame tu memoria", "muestrame mi memoria", "que recuerdas",
+                "ver memoria", "mostrar memoria",
                 "que sabes de mi", "que tienes guardado")
     if any(x in o for x in _MOSTRAR):
-        resp = json.dumps(mem, ensure_ascii=False, indent=2)
-        print(f"\n📋 [MEMORIA]:\n{resp}")
+        # Antes esto hacia json.dumps(mem) crudo: volcaba TODO el dict
+        # interno (conversacion completa, historial_comandos, core, y ahora
+        # tambien el resumen) como JSON en el chat. Inútil para leer y
+        # ademas filtra estructura interna que no le importa al usuario.
+        # Mostramos en cambio lo que alguien preguntando "que sabes de mi"
+        # realmente quiere ver: el resumen curado + core memory.
+        resumen = (mem.get("resumen") or "").strip()
+        core = mem.get("core") or {}
+        partes = []
+        if resumen:
+            partes.append(f"[RESUMEN]\n{resumen}")
+        else:
+            partes.append("[RESUMEN]\n(todavía no se consolidó ningún resumen — usá /memory consolidar)")
+        if core:
+            lineas_core = "\n".join(f"  {k}: {v}" for k, v in core.items() if v)
+            partes.append(f"[CORE]\n{lineas_core}")
+        prefs = mem.get("preferencias") or {}
+        if prefs:
+            partes.append(
+                "[preferencias]\n"
+                f"  nombre_usuario: {prefs.get('nombre_usuario', '')}\n"
+                f"  navegador: {prefs.get('navegador', '')}\n"
+                f"  notas: {len(prefs.get('notas') or [])}"
+            )
+        resp = "\n\n".join(partes)
+        print(f"\n📋 [MEMORIA]: mostrando resumen ({len(resumen)} chars) + {len(core)} claves de core.")
 
     elif any(x in o for x in ["borra la conversacion", "olvida la conversacion"]):
         mem["conversacion"] = []
@@ -2662,6 +2992,10 @@ def node_memory(state: AetherState) -> dict:
             resp += f" Anotado: «{nota}»."
 
         from core.memory.memory_manager import guardar_memoria
+        if not resp:
+            # El router puede llegar aquí por una palabra ambigua; nunca
+            # responder con éxito ficticio de memoria. Delegamos a charla.
+            return node_text(state)
         guardar_memoria(mem)
 
     print(f"\n🎙️  Aether: {resp}")
@@ -2883,7 +3217,7 @@ _CAMPOS_RESULTADO_DEFAULT = (
 
 # Para web: priorizar web_results (datos crudos) sobre final_response
 _CAMPOS_RESULTADO_POR_TOOL = {
-    "web":          ("web_results", "final_response", "llm_response"),
+    "web":          ("final_response", "web_results", "llm_response"),
     "shell":        ("shell_output", "final_response", "llm_response"),
     "vision":       ("vision_result", "final_response", "llm_response"),
     "codigo":       ("shell_output", "final_response", "llm_response"),
@@ -2916,14 +3250,19 @@ def _construir_orden_paso(instruccion: str, args: dict, plan_resultados: list[st
     partes = [instruccion]
 
     if isinstance(args, dict):
-        for clave in ("query", "command", "app"):
+        for clave in ("query", "command", "app", "filename"):
             val = args.get(clave)
             if isinstance(val, str) and val.strip() and val.strip() not in instruccion:
                 partes.append(f"[{clave}] {val.strip()}")
 
     if plan_resultados:
+        # 1500 chars (antes 200): un resultado de búsqueda truncado a 200
+        # caracteres apenas alcanza para una frase — no le llega el comando
+        # o los pasos concretos del fix al paso siguiente (ej. web→shell:
+        # buscar cómo resolver un error y después ejecutar el comando real).
+        # NUM_CTX ya está en 32768 en config.json, hay margen de sobra.
         ctx = "\n".join(
-            f"  - Paso {i + 1}: {str(r)[:200]}" for i, r in enumerate(plan_resultados)
+            f"  - Paso {i + 1}: {str(r)[:1500]}" for i, r in enumerate(plan_resultados)
         )
         partes.append(f"\n[CONTEXTO DE PASOS PREVIOS]\n{ctx}")
 

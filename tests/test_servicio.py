@@ -68,6 +68,30 @@ def test_procesar_orden_grafo_respuesta_vacia_tiene_default():
     assert isinstance(out, str) and out.strip()
 
 
+def test_todas_las_fachadas_programan_consolidacion_post_turno():
+    import core.agent.graph_builder as gb
+    import core.agent.graph_service as agent_svc
+
+    for svc_module in (svc, agent_svc):
+        fake = _FakeGraph("respuesta")
+        llamadas = []
+        orig_get_graph = gb.get_graph
+        orig_registrar = svc_module.registrar_turno
+        orig_programar = svc_module.programar_consolidacion
+        gb.get_graph = lambda: fake
+        svc_module.registrar_turno = lambda *args, **kwargs: None
+        svc_module.programar_consolidacion = lambda mem: llamadas.append(mem)
+        mem = {}
+        try:
+            assert svc_module.procesar_orden_grafo("hola", mem) == "respuesta"
+        finally:
+            gb.get_graph = orig_get_graph
+            svc_module.registrar_turno = orig_registrar
+            svc_module.programar_consolidacion = orig_programar
+
+        assert llamadas == [mem]
+
+
 def test_process_message_usa_grafo():
     # Importar el servicio backend y forzar estado inicializado
     from backend.core import aether_service as backend_svc

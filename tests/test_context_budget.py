@@ -53,7 +53,9 @@ def test_incluye_mas_de_50_turnos():
     with _patch(cb, "obtener_recuerdos", lambda **k: []):
         # 120 turnos cortos, presupuesto amplio → deben entrar los 120
         with _patch(cb, "MAX_TURNOS_CONTEXTO", 200), _patch(cb, "CONTEXTO_CONV_MAX_CHARS", 100000):
-            ctx = cb.construir_contexto_memoria(_mem(120))
+                # El tema explícito representa una tarea; la charla pura usa
+                # deliberadamente la ventana chica MAX_TURNOS_CONTEXTO_CHAT.
+                ctx = cb.construir_contexto_memoria(_mem(120), tema="web")
     assert _contar_turnos(ctx) == 120, _contar_turnos(ctx)
     assert "120 turnos" in ctx
 

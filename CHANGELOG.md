@@ -1,5 +1,13 @@
 # Changelog
 
+## [Unreleased]
+### Added
+- Dictado por voz en la TUI (F2, push-to-talk): `core/services/stt_worker.py` corre faster-whisper (modelo `medium`, CPU/int8) como proceso persistente y aislado en `~/whisper_aether_test/venv-stt`; `core/services/stt_service.py` habla con él por stdin/stdout (JSON-lines) y graba audio con `arecord` (sin dependencias nuevas en el venv principal). Config nueva: `STT_ENABLED`, `STT_LANGUAGE`, `STT_VENV_PYTHON`.
+- **Runtime CLI global**: `bin/aether` (bash launcher auto-localizable) + `bin/aether_run.py`. Permite lanzar Aether desde **cualquier directorio** con un comando `aether` global (symlink en `~/.local/bin`): TUI por defecto, `task "..."` (one-shot sobre el grafo, ideal para scripts/cron), `cli`, `doctor` (diagnóstico) y `--version`.
+
+### Fixed
+- `jarvis_new.py` (`aether cli`): ahora trata `EOFError` como fin de sesión y termina limpio (antes entraba en loop infinito de error con stdin cerrado).
+
 ## [1.0.0] - 2026-07-11
 ### Added
 - Migración completa de CrewAI a LangGraph puro.

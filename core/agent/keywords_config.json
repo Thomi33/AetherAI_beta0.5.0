@@ -3,12 +3,13 @@
 
   "web": [
     "busca", "buscar", "qué es", "que es", "cómo funciona", "como funciona",
-    "cuál es", "cual es", "cuánto", "cuanto", "versión", "version",
+    "cuál es", "cual es", "versión", "version",
     "última versión", "ultima version", "noticias", "noticia", "novedades",
     "precio", "investiga", "wikipedia", "actualmente", "hoy", "reciente",
     "último", "ultimo", "última", "ultima", "encuentra información",
     "qué dice", "que dice", "qué pasó", "que paso", "qué ha pasado",
-    "que ha pasado", "qué hay de nuevo", "que hay de nuevo", "clima", "tiempo"
+    "que ha pasado", "qué hay de nuevo", "que hay de nuevo", "clima", "tiempo",
+    "precio", "investiga", "wikipedia","encuentra información"
   ],
 
   "vision": [
@@ -62,15 +63,33 @@
     "pestaña", "pestana", "enlace", "link"
   ],
 
+  "accion_resultado": [
+    "arregla", "arreglalo", "arréglalo", "arreglar", "arreglame",
+    "soluciona", "solucionalo", "solucionálo", "solucionar", "solucioname",
+    "corrige", "corrigelo", "corrígelo", "corregir", "corrigeme", "corrígeme",
+    "repara", "reparalo", "repáralo", "reparar",
+    "resuelve", "resuelvelo", "resuélvelo", "resolver",
+    "instala", "instalalo", "instálalo", "instalar",
+    "aplica", "aplicalo", "aplicalo", "aplicálo", "aplicar", "aplica el fix", "aplica la solución"
+  ],
+
   "memory": [
-    "muéstrame tu memoria", "tu memoria", "mi memoria", "qué recuerdas",
-    "que recuerdas", "ver memoria", "mostrar memoria", "qué sabes de mí",
-    "que sabes de mi", "qué tienes guardado", "que tienes guardado",
+    "muéstrame tu memoria", "mostrame tu memoria", "mostrame mi memoria",
+    "qué recuerdas", "que recuerdas", "ver memoria", "mostrar memoria",
+    "qué sabes de mí", "que sabes de mi", "qué tienes guardado", "que tienes guardado",
     "qué guardaste", "que guardaste",
     "borra la conversación", "limpia la memoria conversacional",
     "olvida la conversación", "borra los flatpaks", "olvida los flatpaks",
-    "actualiza flatpaks", "mi nombre es", "años",
+    "actualiza flatpaks", "mi nombre es",
     "recuerda que", "anota que", "guarda que"
+  ],
+
+  "correccion": [
+    "te cache", "te cach\u00e9", "me mentiste", "no me mientas", "eso no es cierto",
+    "eso no es asi", "no es asi", "no es cierto", "est\u00e1s equivocado", "estas equivocado",
+    "te equivocaste", "eso esta mal", "eso est\u00e1 mal", "eso es mentira", "es mentira",
+    "no me creas", "me estas mintiendo", "me est\u00e1s mintiendo", "eso no paso",
+    "eso no pas\u00f3", "no hiciste eso", "no ejecutaste nada", "eso es falso"
   ],
 
   "anaforico": [

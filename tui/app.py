@@ -21,6 +21,7 @@ from tui.widgets.selector_screens import (
     McpSelectorScreen,
     EffortSelectorScreen,
     CommandPaletteScreen,
+    MemoryEditorScreen,
 )
 
 from tui.engine_bridge import (
@@ -36,6 +37,7 @@ from tui.engine_bridge import (
 
 SLASH_HELP = (
     "Comandos disponibles:\n"
+    "  F2                     — dictar por voz (push-to-talk, whisper local)\n"
     "  /help                  — esta ayuda\n"
     "  /debug                 — muestra/oculta el panel de debug\n"
     "  /get [clave]           — ver config actual (todas, o una clave puntual)\n"
@@ -58,6 +60,7 @@ class AetherApp(App):
     BINDINGS = [
         ("tab", "open_agents", "agents"),
         ("ctrl+p", "open_commands", "commands"),
+        ("f2", "toggle_dictado", "🎙️ dictar"),
     ]
 
     CSS = """
@@ -77,6 +80,7 @@ class AetherApp(App):
         self._ultimas_sesiones: list[dict] = []  # cache para '/historial <n>' tras '/sesiones'
         self._current_agent = "build"
         self._current_effort = "medium"
+        self._grabador = None  # GrabadorAudio, lazy (ver core/services/stt_service.py)
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -111,10 +115,12 @@ class AetherApp(App):
         if event.button.id == "btn_enviar":
             self._enviar_mensaje()
 
-    def on_input_changed(self, event: Input.Changed) -> None:
+    async def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "input_chat":
             sc = self.query_one("#slash_completer", SlashCompleter)
-            sc.update_query(event.value)
+            # FIX (crash slash commands): update_query es async en Textual 8.x
+            # (clear/append de ListView retornan AwaitRemove/AwaitMount).
+            await sc.update_query(event.value)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "input_chat":
@@ -268,6 +274,13 @@ class AetherApp(App):
         elif cmd == "/effort":
             self._abrir_effort_selector()
 
+        elif cmd == "/memory":
+            arg = partes[1].lower() if len(partes) > 1 else ""
+            if arg == "consolidar":
+                self._forzar_consolidacion_memoria()
+            else:
+                self._abrir_memory_editor()
+
         elif cmd == "/agents":
             self._abrir_agent_selector()
 
@@ -302,6 +315,108 @@ class AetherApp(App):
         """Ctrl+P → abre la paleta de comandos."""
         if not self._thinking:
             self._abrir_command_palette()
+
+    def action_toggle_dictado(self) -> None:
+        """
+        F2 → push-to-talk: primera pulsación arranca a grabar audio con
+        arecord, la segunda corta la grabación y dispara la transcripción
+        (faster-whisper, en el worker aislado de core/services/stt_service.py).
+        El texto transcripto queda cargado en el input, listo para revisar
+        antes de enviar (no se auto-envía: dictado, no comando de voz).
+        """
+        if self._thinking:
+            return
+
+        from core.config.config_manager import get_config_manager
+        chat_panel = self.query_one("#chat_panel", ChatPanel)
+
+        if not get_config_manager().get("STT_ENABLED", True):
+            chat_panel.agregar_mensaje("⚠️ Dictado por voz deshabilitado (/set STT_ENABLED true para activarlo).", "assistant")
+            return
+
+        if self._grabador is None:
+            from core.services.stt_service import GrabadorAudio
+            self._grabador = GrabadorAudio()
+
+        input_widget = self.query_one("#input_chat", Input)
+
+        if not self._grabador.grabando:
+            try:
+                self._grabador.iniciar()
+            except Exception as e:  # noqa: BLE001
+                chat_panel.agregar_mensaje(f"⚠️ No se pudo iniciar la grabación: {e}", "assistant")
+                return
+            input_widget.placeholder = "🔴 Grabando... (F2 para detener y transcribir)"
+            return
+
+        wav_path = self._grabador.detener()
+        input_widget.placeholder = "Escribí tu mensaje aquí..."
+
+        if wav_path is None:
+            chat_panel.agregar_mensaje("⚠️ Grabación vacía, no se transcribió nada.", "assistant")
+            return
+
+        self._thinking = True
+        input_widget.disabled = True
+        input_widget.placeholder = "🎧 Transcribiendo..."
+        self._transcribir_bg(wav_path)
+
+    @work(thread=True, exclusive=True, group="dictado")
+    def _transcribir_bg(self, wav_path) -> None:
+        from core.services.stt_service import transcribir_wav, SttNoDisponible
+        from core.config.config_manager import get_config_manager
+
+        idioma = get_config_manager().get("STT_LANGUAGE", "es") or None
+        try:
+            texto = transcribir_wav(wav_path, idioma=idioma)
+        except SttNoDisponible as e:
+            self.call_from_thread(self._on_dictado_error, str(e))
+            return
+        except Exception as e:  # noqa: BLE001 — cualquier falla debe llegar a la UI, no colgar el input
+            self.call_from_thread(self._on_dictado_error, f"{type(e).__name__}: {e}")
+            return
+        finally:
+            try:
+                wav_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+        self.call_from_thread(self._on_dictado_listo, texto)
+
+    def _on_dictado_listo(self, texto: str) -> None:
+        input_widget = self.query_one("#input_chat", Input)
+        self._thinking = False
+        input_widget.disabled = False
+        input_widget.placeholder = "Escribí tu mensaje aquí..."
+        texto = (texto or "").strip()
+        if texto:
+            input_widget.value = texto
+            input_widget.cursor_position = len(input_widget.value)
+        else:
+            self.query_one("#chat_panel", ChatPanel).agregar_mensaje(
+                "⚠️ No se entendió nada en la grabación.", "assistant"
+            )
+        input_widget.focus()
+
+    def _on_dictado_error(self, mensaje: str) -> None:
+        input_widget = self.query_one("#input_chat", Input)
+        self._thinking = False
+        input_widget.disabled = False
+        input_widget.placeholder = "Escribí tu mensaje aquí..."
+        self.query_one("#chat_panel", ChatPanel).agregar_mensaje(f"⚠️ Error transcribiendo: {mensaje}", "assistant")
+        input_widget.focus()
+
+    def on_unmount(self) -> None:
+        """Corta cualquier grabación en curso y apaga el worker de STT al cerrar la TUI."""
+        try:
+            if self._grabador and self._grabador.grabando:
+                self._grabador.descartar()
+        except Exception:
+            pass
+        try:
+            from core.services.stt_service import get_stt_worker
+            get_stt_worker().cerrar()
+        except Exception:
+            pass
 
     # ── Selectores modales ────────────────────────────────────────────────────
 
@@ -433,6 +548,47 @@ class AetherApp(App):
 
         self.push_screen(EffortSelectorScreen(current=self._current_effort), _on_effort)
 
+    def _abrir_memory_editor(self) -> None:
+        from core.memory.memory_manager import obtener_resumen, guardar_resumen
+
+        texto_actual = obtener_resumen().get("texto", "")
+
+        def _on_save(nuevo_texto: str | None) -> None:
+            if nuevo_texto is None:
+                return
+            # Edición manual: no toca ultimo_turno_id (ver guardar_resumen),
+            # así que la próxima consolidación automática sigue integrando
+            # desde donde iba, sin re-procesar turnos ya vistos.
+            guardar_resumen(nuevo_texto)
+            self._motor_actualizar_resumen(nuevo_texto)
+            self.query_one("#chat_panel", ChatPanel).agregar_mensaje(
+                "Resumen de memoria actualizado.", "assistant"
+            )
+
+        self.push_screen(MemoryEditorScreen(texto_actual=texto_actual, on_save=_on_save), _on_save)
+
+    def _forzar_consolidacion_memoria(self) -> None:
+        from core.memory.consolidator import consolidar_resumen
+        chat_panel = self.query_one("#chat_panel", ChatPanel)
+        nuevo = consolidar_resumen(forzar=True)
+        if nuevo is None:
+            chat_panel.agregar_mensaje(
+                "No había turnos nuevos para consolidar (o la consolidación falló; ver logs).",
+                "assistant",
+            )
+        else:
+            self._motor_actualizar_resumen(nuevo)
+            chat_panel.agregar_mensaje("Resumen consolidado manualmente.", "assistant")
+
+    def _motor_actualizar_resumen(self, texto: str) -> None:
+        """Refleja el resumen nuevo en el dict RAM del motor (engine_bridge),
+        para que el próximo turno ya lo vea sin esperar a recargar memoria."""
+        try:
+            from tui.engine_bridge import _motor
+            _motor.mem["resumen"] = texto
+        except Exception:
+            pass
+
     def _abrir_agent_selector(self) -> None:
         def _on_agent(agent: str | None) -> None:
             if agent:
@@ -517,8 +673,13 @@ class AetherApp(App):
                 plan_panel.actualizar_delta(evento.nodo, evento.delta)
 
         elif isinstance(evento, DoneEvent):
-            respuesta_final = self._respuesta_en_curso.strip() or evento.respuesta
-            chat_panel.agregar_mensaje(respuesta_final, "assistant")
+            # FIX (parche): priorizar la respuesta final limpia (parseada por
+            # _parse_ornith_thinking) sobre el streaming crudo acumulado en
+            # _respuesta_en_curso, que puede incluir el bloque 
+            # completo del modelo. Además, el DoneEvent llega INMEDIATO al
+            # terminar el grafo (ver engine_bridge), así que el usuario puede
+            # volver a escribir sin esperar la consolidación de memoria.
+            chat_panel.agregar_mensaje(evento.respuesta, "assistant")
             streaming_line.update("")
             self._finalizar_turno()
 

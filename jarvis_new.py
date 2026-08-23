@@ -56,7 +56,7 @@ def main():
             procesar_orden_completo(orden, mem, modo_autonomo=MODO_AUTONOMO)
             print(f"\n{'─' * 50}")
 
-        except KeyboardInterrupt:
+        except (EOFError, KeyboardInterrupt):
             print("\n\n🤖 [SISTEMA] Apagado limpio. Hasta luego.")
             break
         except Exception as e:

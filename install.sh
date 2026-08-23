@@ -68,12 +68,10 @@ fi
 # -------------------------
 # 5. Optional Qwen/OpenAI check
 # -------------------------
-if [ -n "$QWEN_API_KEY" ]; then
-    #echo "🤖 Qwen detectado"
-fi
+# (Qwen removido: el motor usa Ollama local, sin API keys externas)
 
 if [ -n "$OPENAI_API_KEY" ]; then
-    echo "🤖 OpenAI detectado"
+    echo "🤖 Provider detectado"
 fi
 
 # -------------------------
@@ -84,11 +82,25 @@ echo "🧪 Verificando instalación..."
 python3 -c "print('Aether OK ✔')"
 
 # -------------------------
+# 6.5. Comando global `aether` (launcher en $PATH)
+# -------------------------
+echo "🌍 Instalando comando global 'aether'..."
+LAUNCH_DEST="${AETHER_BIN_DIR:-$HOME/.local/bin}"
+
+if command -v aether >/dev/null 2>&1 && [ -z "${AETHER_REINSTALL_BIN:-}" ]; then
+    echo "   ✔ Ya existe un comando 'aether' en el PATH"
+elif mkdir -p "$LAUNCH_DEST" 2>/dev/null && ln -sf "$PWD/bin/aether" "$LAUNCH_DEST/aether"; then
+    echo "   ✔ 'aether' disponible en $LAUNCH_DEST"
+    echo "      (moverá/volcá el repo y volvé a correr install.sh para re-apuntarlo"
+    echo "       si clonás a otra carpeta; o forzá con AETHER_REINSTALL_BIN=1)"
+else
+    echo "   ⚠ No se pudo enlazar el launcher; probá: python $INSTALL_DIR/run.py" >&2
+fi
+
+# -------------------------
 # 7. Finish
 # -------------------------
 echo ""
 echo "✅ Aether instalado correctamente"
-echo "👉 Ejecuta:"
-echo "   cd $INSTALL_DIR"
-echo "   source crewai-env/bin/activate"
-echo "   python run.py"
+echo "👉 Ejecuta desde cualquier directorio:"
+echo "   aether"

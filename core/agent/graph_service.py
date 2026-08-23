@@ -10,6 +10,7 @@ Función principal:
 """
 
 from core.memory.memory_manager import registrar_turno
+from core.memory.consolidator import programar_consolidacion
 
 
 def procesar_orden_grafo(orden: str, mem: dict, modo_autonomo: bool = True) -> str:
@@ -31,6 +32,10 @@ def procesar_orden_grafo(orden: str, mem: dict, modo_autonomo: bool = True) -> s
     grafo = get_graph()
     estado = crear_estado_inicial(orden, mem, modo_autonomo)
     resultado = grafo.invoke(estado)
+
+    # Fachada de compatibilidad: conservar el mismo hook post-turno que la
+    # entrada canónica de core.services para no dejar callers sin consolidar.
+    programar_consolidacion(mem)
 
     final_response = resultado.get("final_response")
     if not final_response:

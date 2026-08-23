@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# ============================================================================
+# aether — Lanzador global del agente Aether (LangGraph + Ollama).
+#
+# Permite ejecutar Aether desde CUALQUIER directorio, sin necesidad de
+# `cd` al proyecto ni activar el venv a mano:
+#
+#   aether                → TUI moderna  (equivale a: cd <proyecto> && python run.py)
+#   aether tui            → idem, explícito
+#   aether task "ORDEN"   → one-shot: ejecuta UNA orden y devuelve la respuesta
+#   aether cli            → loop interactivo simple sin Textual (jarvis_new.py)
+#   aether doctor         → diagnóstico del entorno (python, venv, ollama, db)
+#   aether -V | --version → versión del runtime
+#   aether -h | --help    → esta ayuda
+#
+# Se auto-localiza: funciona copiado Y como symlink (p.ej. en ~/.local/bin).
+# Se puede forzar intérprete con la env var AETHER_PYTHON.
+# ============================================================================
+set -euo pipefail
+
+# ── 1) Localizar el directorio real del proyecto (soporta symlinks) ────────
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+AETHER_HOME="$(cd -P "$(dirname "$SOURCE")/.." >/dev/null 2>&1 && pwd)"
+
+# ── 2) Elegir el intérprete (venvs probados en orden de prioridad) ────────
+PY=""
+if [[ -n "${AETHER_PYTHON:-}" && -x "$AETHER_PYTHON" ]]; then
+  PY="$AETHER_PYTHON"
+fi
+for cand in \
+    "$AETHER_HOME/env/bin/python" \
+    "$AETHER_HOME/crewai-env/bin/python" \
+    "$AETHER_HOME/.venv/bin/python"; do
+  if [[ -z "$PY" && -x "$cand" ]]; then
+    PY="$cand"
+    break
+  fi
+done
+if [[ -z "$PY" ]]; then
+  PY="$(command -v python3 || true)"
+fi
+if [[ -z "$PY" ]]; then
+  echo "❌ No se encontró Python. Configurá AETHER_PYTHON apuntando a un venv con textual instalado." >&2
+  exit 1
+fi
+
+# ── 3) Ejecutar (el cwd pasa a ser el proyecto: misma base que antes) ─────
+cd "$AETHER_HOME"
+case "${1:-}" in
+  -h|--help)
+    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+  -V|--version)
+    exec "$PY" bin/aether_run.py version
+    ;;
+  -t|--task|task)
+    shift
+    exec "$PY" bin/aether_run.py task "$@"
+    ;;
+  cli|-i|--interactive)
+    exec "$PY" jarvis_new.py
+    ;;
+  doctor|--doctor)
+    exec "$PY" bin/aether_run.py doctor
+    ;;
+  *)
+    exec "$PY" run.py
+    ;;
+esac

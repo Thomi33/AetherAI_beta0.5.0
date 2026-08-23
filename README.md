@@ -58,10 +58,13 @@ El corazón del agente vive en **`core/`**:
 mi_proyecto_crew/
 ├── run.py                      # ▶️ Entrypoint principal (python run.py)
 ├── jarvis_new.py               # ▶️ Entrypoint alternativo (loop propio sobre el grafo)
+├── bin/                        # 🌍 Lanzador global (`aether` desde cualquier directorio)
+│   ├── aether                  #   Bash launcher: auto-localiza proyecto + venv, despacha
+│   └── aether_run.py           #   Runtime CLI: `version` / `task` (one-shot) / `doctor`
 ├── test_planning.py            # 🧪 Runner de toda la suite tests/
 │
 ├── cli/
-│   └── main.py                 # Loop interactivo de terminal
+│   └── main.py                 # Loop interactivo de terminal (deprecated)
 │
 ├── core/                       # 🧠 Motor del agente (LangGraph + Ollama)
 │   ├── agent/
@@ -96,7 +99,7 @@ mi_proyecto_crew/
 ```
 
 > El motor es **LangGraph puro** (sin CrewAI). Los entrypoints activos son
-> `run.py` (recomendado) y `jarvis_new.py`.
+> `run.py` (recomendado), `jarvis_new.py` y el launcher global `bin/aether`.
 
 ---
 
@@ -130,6 +133,32 @@ mi_proyecto_crew/
 ---
 
 ## ▶️ Ejecutar Aether
+
+### Opción 0 — Lanzador global `aether` (desde cualquier directorio) 🌍
+
+No necesitás entrar al directorio del proyecto ni activar el venv. El
+`bin/aether` se auto-localiza (funciona copiado o como symlink), elige el
+python del venv correcto y lanza el motor:
+
+```bash
+# 1) Instalar el comando una sola vez (symlink en ~/.local/bin, que ya está en $PATH):
+mkdir -p ~/.local/bin && ln -sf "$(pwd)/bin/aether" ~/.local/bin/aether
+# 2) Usarlo desde CUALQUIER directorio:
+aether                            # TUI moderna (como python run.py)
+aether task "busca el precio de Bitcoin y guárdalo en precio.txt"  # one-shot
+aether cli                        # loop interactivo simple sin Textual
+aether doctor                     # diagnóstico del entorno
+aether --version                  # versión del runtime
+aether --help                     # ayuda completa
+```
+
+- **`aether task "ORDEN"`** ejecuta una sola orden contra el grafo y devuelve
+  la respuesta final. Ideal para **scripts, cron o atajos de teclado**.
+- **`aether doctor`** verifica python/venv, dependencias, `ollama list`,
+  config y la DB de producción (`~/Aether/db/current.db`).
+- Forzar otro intérprete: `AETHER_PYTHON=/ruta/al/python aether`.
+- En Arch, si el repo se clona a otra carpeta, volvé a apuntar el symlink y
+  listo — el launcher siempre arranca en la raíz del proyecto automáticamente.
 
 ### Opción 1 — Entrypoint principal (recomendado)
 ```bash

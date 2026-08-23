@@ -87,6 +87,13 @@ def asegurar_esquema() -> None:
                     valor        TEXT,
                     actualizado  TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS resumen_memoria (
+                    id               INTEGER PRIMARY KEY CHECK (id = 1),
+                    texto            TEXT DEFAULT '',
+                    ultimo_turno_id  INTEGER DEFAULT 0,
+                    actualizado      TEXT
+                );
             """)
         print("[MEMORIA] Esquema verificado/creado en", DB_PATH)
     except Exception as e:
@@ -98,9 +105,15 @@ def asegurar_esquema() -> None:
 # ══════════════════════════════════════════════════════════════════════
 def _memoria_vacia() -> dict:
     return {
+        # Contrato legacy que sigue consumiendo node_memory, la TUI y algunos
+        # conectores. Se conserva mientras la memoria persistente migra al
+        # modelo core/resumen; quitarlo rompía sesiones existentes.
+        "preferencias":      {"nombre_usuario": "Thomas", "navegador": "brave", "notas": []},
+        "flatpaks":          {},
         "conversacion":       [],   # [{rol, texto, fecha, sesion_id, tema}]
         "historial_comandos": [],   # [{orden, cmd, fecha, sesion_id}]
         "core":               {},   # espejo de core_memory
+        "resumen":            "",   # espejo de resumen_memoria.texto (rolling summary)
         "sesion_id":          "",
     }
 
@@ -110,6 +123,20 @@ def normalizar_mem(mem: dict | None) -> dict:
     base = _memoria_vacia()
     if not isinstance(mem, dict):
         return base
+    # Mantener el mismo objeto de sesión, pero completar todos los campos del
+    # contrato en vez de devolver estructuras parciales según el caller.
+    for clave, valor in base.items():
+        mem.setdefault(clave, valor.copy() if isinstance(valor, dict) else list(valor) if isinstance(valor, list) else valor)
+    if not isinstance(mem.get("preferencias"), dict):
+        mem["preferencias"] = dict(base["preferencias"])
+    else:
+        prefs = mem["preferencias"]
+        prefs.setdefault("nombre_usuario", "Thomas")
+        prefs.setdefault("navegador", "brave")
+        if not isinstance(prefs.get("notas"), list):
+            prefs["notas"] = []
+    if not isinstance(mem.get("flatpaks"), dict):
+        mem["flatpaks"] = {}
     if not isinstance(mem.get("conversacion"), list):
         mem["conversacion"] = []
     if not isinstance(mem.get("historial_comandos"), list):
@@ -118,6 +145,8 @@ def normalizar_mem(mem: dict | None) -> dict:
         mem["core"] = {}
     if "sesion_id" not in mem:
         mem["sesion_id"] = ""
+    if not isinstance(mem.get("resumen"), str):
+        mem["resumen"] = ""
     return mem
 
 
@@ -151,6 +180,78 @@ def actualizar_core(clave: str, valor: str) -> None:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# RESUMEN ACUMULATIVO (rolling summary) — reemplaza la inyección de chats
+# crudos como fuente de contexto de largo plazo. Se actualiza por
+# CONSOLIDACIÓN (core/memory/consolidator.py), no por append: cada corrida
+# reescribe el resumen completo incorporando lo nuevo relevante.
+# ══════════════════════════════════════════════════════════════════════
+def obtener_resumen() -> dict:
+    """
+    Retorna {"texto": str, "ultimo_turno_id": int, "actualizado": str}.
+    Si todavía no hay resumen (primera vez), texto viene vacío.
+    """
+    try:
+        with _db() as con:
+            fila = con.execute(
+                "SELECT texto, ultimo_turno_id, actualizado FROM resumen_memoria WHERE id = 1"
+            ).fetchone()
+            if fila:
+                return dict(fila)
+    except Exception as e:
+        print(f"[MEMORIA] Error leyendo resumen: {e}")
+    return {"texto": "", "ultimo_turno_id": 0, "actualizado": ""}
+
+
+def guardar_resumen(texto: str, ultimo_turno_id: int | None = None) -> None:
+    """
+    Reemplaza el resumen acumulativo completo (fila única id=1).
+
+    Si ultimo_turno_id es None, preserva el que ya estaba guardado (útil
+    para ediciones manuales desde /memory en la TUI, donde no corresponde
+    tocar el cursor de consolidación automática).
+    """
+    try:
+        with _db() as con:
+            if ultimo_turno_id is None:
+                fila = con.execute(
+                    "SELECT ultimo_turno_id FROM resumen_memoria WHERE id = 1"
+                ).fetchone()
+                ultimo_turno_id = fila["ultimo_turno_id"] if fila else 0
+            con.execute("""
+                INSERT INTO resumen_memoria (id, texto, ultimo_turno_id, actualizado)
+                VALUES (1, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    texto=excluded.texto,
+                    ultimo_turno_id=excluded.ultimo_turno_id,
+                    actualizado=excluded.actualizado
+            """, (texto, ultimo_turno_id, datetime.now().isoformat()))
+        print(f"[MEMORIA] Resumen actualizado ({len(texto)} chars, hasta turno #{ultimo_turno_id}).")
+    except Exception as e:
+        print(f"[MEMORIA] Error guardando resumen: {e}")
+
+
+def obtener_turnos_pendientes_de_resumen(limit: int = 300) -> list[dict]:
+    """
+    Turnos crudos de `conversaciones` posteriores al último consolidado en
+    el resumen. Usado por el consolidador para saber qué integrar.
+    """
+    ultimo_id = obtener_resumen().get("ultimo_turno_id", 0)
+    try:
+        with _db() as con:
+            filas = con.execute("""
+                SELECT id, fecha, rol, texto
+                FROM conversaciones
+                WHERE id > ?
+                ORDER BY id ASC
+                LIMIT ?
+            """, (ultimo_id, limit)).fetchall()
+            return [dict(f) for f in filas]
+    except Exception as e:
+        print(f"[MEMORIA] Error leyendo turnos pendientes de resumen: {e}")
+        return []
+
+
+# ══════════════════════════════════════════════════════════════════════
 # CARGA INICIAL
 # ══════════════════════════════════════════════════════════════════════
 def cargar_memoria() -> dict:
@@ -165,6 +266,12 @@ def cargar_memoria() -> dict:
             # Core memory
             filas = con.execute("SELECT clave, valor FROM core_memory").fetchall()
             mem["core"] = {f["clave"]: f["valor"] for f in filas}
+
+            # Resumen acumulativo (rolling summary)
+            fila_resumen = con.execute(
+                "SELECT texto FROM resumen_memoria WHERE id = 1"
+            ).fetchone()
+            mem["resumen"] = fila_resumen["texto"] if fila_resumen else ""
 
             # Últimos turnos conversacionales
             turnos = con.execute("""

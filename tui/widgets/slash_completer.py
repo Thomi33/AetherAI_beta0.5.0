@@ -21,6 +21,7 @@ SLASH_COMMANDS = [
     ("/help",      "Show help"),
     ("/historial", "Ver sesión archivada"),
     ("/mcps",      "Toggle MCPs"),
+    ("/memory",    "Editar resumen de memoria"),
     ("/models",    "Switch model"),
     ("/new",       "New session"),
     ("/sesiones",  "List sessions"),
@@ -75,8 +76,16 @@ class SlashCompleter(Widget):
     def compose(self) -> ComposeResult:
         yield ListView(id="sc-list")
 
-    def update_query(self, text: str) -> None:
-        """Llamar desde app.py cada vez que cambia el input."""
+    async def update_query(self, text: str) -> None:
+        """
+        Llamar desde app.py cada vez que cambia el input.
+
+        FIX (crash slash commands): en Textual 8.x, ListView.clear() retorna
+        AwaitRemove y ListView.append() retorna AwaitMount — son ASYNC. Sin
+        `await`, el árbol de widgets queda a medio montar y la app crashea al
+        escribir '/' + cualquier opción. Ahora se await tanto clear como
+        append.
+        """
         if not text.startswith("/"):
             self.display = False
             return
@@ -85,14 +94,14 @@ class SlashCompleter(Widget):
         self._matches = [(cmd, desc) for cmd, desc in SLASH_COMMANDS if cmd.startswith(query)]
 
         lv = self.query_one("#sc-list", ListView)
-        lv.clear()
+        await lv.clear()
 
         if not self._matches:
             self.display = False
             return
 
         for cmd, desc in self._matches:
-            lv.append(ListItem(
+            await lv.append(ListItem(
                 Label(f"[bold]{cmd}[/bold]  [dim]{desc}[/dim]"),
                 id=f"sc-{cmd.lstrip('/')}",
             ))

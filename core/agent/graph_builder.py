@@ -38,7 +38,7 @@ from core.agent.node_context_manager import node_context_manager
 # CONDICIONALES
 # ══════════════════════════════════════════════════════════════════════
 
-_TOOLS_CON_RESUMEN = frozenset({"shell", "codigo", "file_write", "web", "vision", "mcp", "computer_use"})  # launch goes direct to finalize so we can report PID cleanly
+_TOOLS_CON_RESUMEN = frozenset({"shell", "codigo", "file_write", "web", "vision", "mcp", "computer_use", "launch"})
 
 # Campo de "datos crudos" que cada tool deja en el estado para que Ornith
 # los interprete. Si ese campo está vacío pero la tool YA fijó una
@@ -81,7 +81,7 @@ def _destino_post_plan(state: AetherState) -> str:
         if tool in _TOOLS_CON_RESUMEN:
             ya_tiene_respuesta_final = bool((state.get("final_response") or "").strip())
             hay_datos_crudos = _tiene_datos_crudos_para_sintetizar(state, tool)
-            if ya_tiene_respuesta_final and not hay_datos_crudos:
+            if ya_tiene_respuesta_final and not hay_datos_crudos and tool != "launch":
                 return "finalize"
             return "plan_synthesizer"
         return "finalize"

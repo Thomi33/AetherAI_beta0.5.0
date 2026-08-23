@@ -10,6 +10,7 @@ Función principal:
 """
 
 from core.memory.memory_manager import registrar_turno
+from core.memory.consolidator import programar_consolidacion
 
 
 def procesar_orden_grafo(orden: str, mem: dict, modo_autonomo: bool = True) -> str:
@@ -31,5 +32,8 @@ def procesar_orden_grafo(orden: str, mem: dict, modo_autonomo: bool = True) -> s
     grafo = get_graph()
     estado = crear_estado_inicial(orden, mem, modo_autonomo)
     resultado = grafo.invoke(estado)
-
+    # node_finalize ya dejó registrado el turno de Aether. Programar después
+    # de invoke garantiza que el lote vea el intercambio completo y no añade
+    # latencia al caller (API/CLI).
+    programar_consolidacion(mem)
     return resultado.get("final_response") or "Operación completada."

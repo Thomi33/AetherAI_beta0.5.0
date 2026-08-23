@@ -24,8 +24,9 @@ BENCH_LOG_PATH = Path.home() / ".aether" / "bench_metrics.jsonl"
 BENCH_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
 TIMEOUT_CMD     = 60
 # Carpeta base de datos del agente (DB, logs, screenshots…).
+# Home de Aether: ~/Aether (es decir /home/thomi/Aether). Crear data aquí.
 # Cambiar SOLO esta ruta reubica toda la data del agente.
-BASE_AETHER     = Path("/mnt/nvme/Aether")
+BASE_AETHER     = Path.home() / "Aether"
 
 # ─────────────────────────────────────────────────────────────────────
 # 👁️  MODELO DE VISIÓN

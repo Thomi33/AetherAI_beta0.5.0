@@ -196,10 +196,16 @@ class ConfigManager:
         "TEMPERATURE": ConfigValidator.validate_temp,
         "MAX_TOKENS": ConfigValidator.validate_max_tokens,
         "NUM_PREDICT": ConfigValidator.validate_num_predict,
+        "NUM_PREDICT_PLANNER": ConfigValidator.validate_num_predict,
         "VERBOSE": ConfigValidator.validate_bool,
         "DEBUG": ConfigValidator.validate_bool,
         "THEME": ConfigValidator.validate_string,
         "REFRESH_RATE": lambda x: isinstance(x, (int, float)) and x > 0,
+        "STT_ENABLED": ConfigValidator.validate_bool,
+        "STT_LANGUAGE": lambda x: x is None or isinstance(x, str),
+        "STT_VENV_PYTHON": lambda x: isinstance(x, str),
+        "AUDIO_INPUT_MATCH": ConfigValidator.validate_string,
+        "STT_VOCAB_HINT": lambda x: isinstance(x, str),
     }
     
     # Valores por defecto
@@ -219,15 +225,47 @@ class ConfigManager:
         "OLLAMA_GEN_OPTIONS": {"num_batch": 512, "num_gpu": 8, "num_thread": 8},
         "OLLAMA_NUM_PARALLEL": 4,
         "OLLAMA_MAX_LOADED_MODELS": 2,
-        "BASE_AETHER": "/mnt/basurero/Aether",
+        "BASE_AETHER": "~/Aether",
         "CARPETA_AETHER": "~/Aether",
         "TEMPERATURE": 0.6,
         "MAX_TOKENS": 2048,
         "NUM_PREDICT": 2048,
+        # Piso de num_predict para llamadas de PLANIFICACIÓN (detección de
+        # intención, plan multi-tool, resolución anafórica, args MCP). Estas
+        # llamadas NO deben escalar con /effort: aunque el usuario esté en
+        # effort 'low' (num_predict=768), el <think> nativo de Ornith puede
+        # comerse ese presupuesto entero y cortar el JSON/decisión a mitad de
+        # camino. Un plan truncado no es una respuesta 'más simple', es
+        # inválida — por eso este piso es independiente del effort general.
+        "NUM_PREDICT_PLANNER": 3072,
         "VERBOSE": False,
         "DEBUG": False,
         "THEME": "default",
         "REFRESH_RATE": 0.1,
+        # Dictado por voz (F2 en la TUI). El modelo faster-whisper corre en
+        # un venv aislado (~/whisper_aether_test/venv-stt) — ver
+        # core/services/stt_service.py. STT_LANGUAGE fijo evita el costo de
+        # autodetección y mejora precisión en code-switching es/en; "" =
+        # autodetectar por turno.
+        "STT_ENABLED": True,
+        "STT_LANGUAGE": "es",
+        "STT_VENV_PYTHON": "",
+        # Nombre estable de la placa de entrada. Los índices ALSA/PyAudio
+        # pueden cambiar tras un reinicio, por eso se resuelve en runtime.
+        "AUDIO_INPUT_MATCH": "AudioBox USB 96",
+        # Nombres propios/vocabulario técnico frecuente en las órdenes de
+        # Thomas. Se pasa como initial_prompt a faster-whisper (condiciona
+        # la decodificación): sin esto, whisper decodifica "Aether" o
+        # "GitHub" como la palabra en español más parecida fonéticamente y
+        # arrastra el error al resto de la frase. Editá esta lista con
+        # /set STT_VOCAB_HINT "..." si aparecen palabras nuevas que
+        # transcriben mal seguido.
+        "STT_VOCAB_HINT": (
+            "Aether, GitHub, Ollama, LangGraph, Ornith, MCP, Textual, "
+            "Hyprland, Wayland, NVMe, Notion, Steam, Roblox, Minecraft, "
+            "VLSM, subnetting, ydotool, faster-whisper, SQLite, "
+            "consolidator, AudioBox USB 96, CrewAI."
+        ),
     }
     
     def __init__(self, config_path: Optional[Path] = None):
