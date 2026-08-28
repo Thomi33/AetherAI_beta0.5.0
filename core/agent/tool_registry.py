@@ -111,6 +111,155 @@ TOOLS_VALIDAS: frozenset[str] = frozenset(TOOL_REGISTRY.keys())
 
 
 # ══════════════════════════════════════════════════════════════════════
+# SCHEMAS PARA TOOL CALLING NATIVO (AGENT LOOP)
+# ══════════════════════════════════════════════════════════════════════
+# JSON-schema de los argumentos de cada tool, en el formato que espera
+# Ollama/OpenAI function calling ("parameters"). Es la contraparte
+# estructurada de "descripcion": antes solo servía de texto para el
+# planner viejo, ahora es lo que el modelo realmente usa para decidir CON
+# QUÉ ARGUMENTOS llamar a una tool durante el agent loop.
+TOOL_PARAMETROS: dict[str, dict] = {
+    "text": {
+        "type": "object",
+        "properties": {
+            "instruccion": {"type": "string", "description": "Qué responder o de qué conversar."},
+        },
+        "required": ["instruccion"],
+    },
+    "web": {
+        "type": "object",
+        "properties": {
+            "instruccion": {"type": "string", "description": "Qué buscar en internet."},
+        },
+        "required": ["instruccion"],
+    },
+    "shell": {
+        "type": "object",
+        "properties": {
+            "instruccion": {"type": "string", "description": "Qué comando de sistema ejecutar o lograr."},
+        },
+        "required": ["instruccion"],
+    },
+    "launch": {
+        "type": "object",
+        "properties": {
+            "instruccion": {"type": "string", "description": "Qué aplicación abrir/lanzar."},
+        },
+        "required": ["instruccion"],
+    },
+    "vision": {
+        "type": "object",
+        "properties": {
+            "instruccion": {"type": "string", "description": "Qué mirar/analizar en la pantalla (opcional)."},
+        },
+        "required": [],
+    },
+    "codigo": {
+        "type": "object",
+        "properties": {
+            "instruccion": {"type": "string", "description": "Qué código generar y ejecutar."},
+        },
+        "required": ["instruccion"],
+    },
+    "memory": {
+        "type": "object",
+        "properties": {
+            "instruccion": {"type": "string", "description": "Qué operación de memoria realizar (ver, borrar, recordar)."},
+        },
+        "required": ["instruccion"],
+    },
+    "file_write": {
+        "type": "object",
+        "properties": {
+            "filename": {"type": "string", "description": "Nombre del archivo a escribir."},
+            "instruccion": {"type": "string", "description": "Contenido a guardar, si no es el resultado del paso anterior (opcional)."},
+        },
+        "required": [],
+    },
+    "extract": {
+        "type": "object",
+        "properties": {
+            "instruccion": {"type": "string", "description": "Qué extraer del resultado del paso anterior (opcional)."},
+        },
+        "required": [],
+    },
+    "mcp": {
+        "type": "object",
+        "properties": {
+            "server": {"type": "string", "description": "Nombre del servidor MCP conectado a usar."},
+            "name": {"type": "string", "description": "Nombre de la tool MCP a invocar en ese servidor."},
+            "arguments": {"type": "object", "description": "Argumentos para la tool MCP (según su propio schema)."},
+        },
+        "required": ["server", "name"],
+    },
+    "computer_use": {
+        "type": "object",
+        "properties": {
+            "instruccion": {"type": "string", "description": "Objetivo a lograr controlando mouse/teclado en pantalla."},
+        },
+        "required": ["instruccion"],
+    },
+}
+
+
+def construir_tools_ollama() -> list[dict]:
+    """
+    Arma la lista de tools en formato nativo de Ollama (function calling)
+    a partir de TOOL_REGISTRY + TOOL_PARAMETROS.
+
+    Esto es lo que reemplaza al planner de un solo shot: en vez de pedirle
+    al modelo un plan JSON completo de antemano, se le pasa el catálogo
+    completo de tools (con su descripción y schema de argumentos) en cada
+    turno del agent loop, y el modelo elige él mismo -- con razonamiento
+    real, no keywords -- qué tool usar, con qué argumentos, o si ya puede
+    responder directamente.
+    """
+    tools = []
+    for nombre, meta in TOOL_REGISTRY.items():
+        parametros = TOOL_PARAMETROS.get(nombre, {"type": "object", "properties": {}})
+        tools.append({
+            "type": "function",
+            "function": {
+                "name": nombre,
+                "description": meta["descripcion"],
+                "parameters": parametros,
+            },
+        })
+    return tools
+
+
+def validar_tool_call(tool: str, args: dict) -> tuple[bool, str]:
+    """
+    Sanity-check de UNA tool call propuesta por el modelo durante el agent
+    loop (equivalente de validar_plan(), pero para una llamada individual
+    de tool calling incremental en vez de un plan completo armado de
+    antemano).
+
+    Chequea lo barato y evidente -- la tool existe, args es un dict, trae
+    instrucción si la tool la requiere, y (para mcp) trae server+name --
+    antes de gastar una ejecución real con una llamada alucinada. No
+    reemplaza la validación de tipos fina del JSON-schema; es un freno
+    rápido, no un validador exhaustivo.
+
+    Retorna (ok, motivo). motivo es "" si ok=True.
+    """
+    if tool not in TOOL_REGISTRY:
+        return False, f"tool '{tool}' no existe en el registro."
+    if not isinstance(args, dict):
+        return False, "'arguments' debe ser un objeto/dict."
+
+    if TOOL_REGISTRY[tool]["instruccion_requerida"]:
+        if not _instruccion_de_paso({"args": args}):
+            return False, f"la tool '{tool}' requiere una instrucción no vacía."
+
+    if tool == "mcp":
+        if not args.get("server") or not args.get("name"):
+            return False, "la tool 'mcp' requiere 'server' y 'name'."
+
+    return True, ""
+
+
+# ══════════════════════════════════════════════════════════════════════
 # VALIDACIÓN DE PLANES
 # ══════════════════════════════════════════════════════════════════════
 

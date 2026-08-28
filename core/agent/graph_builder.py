@@ -17,6 +17,7 @@ from core.agent.graph_nodes import (
     node_planner,
     node_plan_executor,
     node_plan_synthesizer,
+    node_agent_loop,
     node_web,
     node_shell,
     node_launch,
@@ -88,10 +89,32 @@ def _destino_post_plan(state: AetherState) -> str:
     return "plan_synthesizer"
 
 
+def _destino_post_context(state: AetherState) -> str:
+    """
+    Después de context_manager: node_planner ya decidió qué camino tomar.
+    Los fast-paths deterministas (charla simple, corrección del usuario,
+    resolución anafórica) siguen armando un plan_pasos de 1 paso → van a
+    plan_executor como antes. Todo lo demás activa agent_activo=True y va
+    al agent loop (razonamiento + tool calling nativo, sin plan armado de
+    antemano).
+    """
+    if state.get("agent_activo", False):
+        return "agent_loop"
+    return "plan_executor"
+
+
 def _route_plan_executor(state: AetherState) -> str:
     if state.get("error_activo", False):
         return "error_diagnose"
     return _destino_post_plan(state)
+
+
+def _route_agent_loop(state: AetherState) -> str:
+    if state.get("error_activo", False):
+        return "error_diagnose"
+    if state.get("agent_activo", False) and not state.get("done", False):
+        return "agent_loop"
+    return "finalize"
 
 
 def _route_after_execution(state: AetherState) -> str:
@@ -142,6 +165,7 @@ def build_graph():
     builder.add_node("planner",          node_planner)
     builder.add_node("context_manager",  node_context_manager)   # ← NUEVO
     builder.add_node("plan_executor",    node_plan_executor)
+    builder.add_node("agent_loop",       node_agent_loop)         # ← NUEVO
     builder.add_node("plan_synthesizer", node_plan_synthesizer)
     builder.add_node("finalize",         node_finalize)
 
@@ -152,10 +176,22 @@ def build_graph():
 
     # ── Edges ────────────────────────────────────────────────────────
 
-    # START → planner → context_manager → plan_executor
+    # START → planner → context_manager → (plan_executor | agent_loop)
     builder.set_entry_point("planner")
-    builder.add_edge("planner",         "context_manager")   # ← NUEVO
-    builder.add_edge("context_manager", "plan_executor")     # ← NUEVO
+    builder.add_edge("planner", "context_manager")
+
+    # context_manager decide entre el camino viejo (fast-paths deterministas
+    # de node_planner, que arman un plan_pasos de 1 paso) y el agent loop
+    # (todo lo demás: razonamiento + tool calling nativo, sin plan armado de
+    # antemano). Ver _destino_post_context / node_planner.
+    builder.add_conditional_edges(
+        "context_manager",
+        _destino_post_context,
+        {
+            "plan_executor": "plan_executor",
+            "agent_loop":    "agent_loop",
+        },
+    )
 
     # plan_executor → loop / error / synthesizer / finalize
     builder.add_conditional_edges(
@@ -166,6 +202,20 @@ def build_graph():
             "error_diagnose":   "error_diagnose",
             "plan_synthesizer": "plan_synthesizer",
             "finalize":         "finalize",
+        },
+    )
+
+    # agent_loop es un self-loop: cada ronda razona + ejecuta las tool
+    # calls que haya y vuelve a entrar mientras agent_activo=True. Termina
+    # yendo directo a finalize (node_agent_loop ya deja final_response
+    # armado él mismo -- no necesita pasar por plan_synthesizer).
+    builder.add_conditional_edges(
+        "agent_loop",
+        _route_agent_loop,
+        {
+            "agent_loop":     "agent_loop",
+            "error_diagnose": "error_diagnose",
+            "finalize":       "finalize",
         },
     )
 

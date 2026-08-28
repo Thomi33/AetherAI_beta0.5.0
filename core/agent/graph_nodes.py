@@ -47,6 +47,7 @@ import difflib
 import shlex
 import unicodedata
 import time
+import json
 import ollama
 
 from langchain_core.messages import HumanMessage, AIMessage
@@ -835,6 +836,7 @@ text: respuesta directa
 IMPORTANTE: Para guardar resultados en archivo usa SIEMPRE "file_write", NUNCA "shell" con echo/tee.
 El nodo file_write toma automáticamente el resultado del paso anterior, no necesitas especificar el contenido.
 IMPORTANTE: Si la tarea es "buscar cómo resolver/arreglar/instalar algo Y HACERLO" (el usuario espera que lo ejecutes, no solo que le cuentes qué encontraste), armá un plan de VARIOS pasos: primero "web" para buscar la solución, después "shell" o "codigo" para aplicarla. NO te quedes en un solo paso "web" cuando la tarea pide explícita o implícitamente una acción sobre lo encontrado.
+IMPORTANTE: Dos pedidos separados unidos por "y", "y luego", "después", etc. SIEMPRE son multi_tool=true, AUNQUE las dos acciones sean independientes entre sí y no compartan datos (ej: "ejecuta X y buscame Y" = un paso launch para X + un paso web para Y, cada uno con su propia instrucción). No asumas que multi-tool requiere que el segundo paso use el resultado del primero.
 Tarea: {orden}
 Si necesita UNA sola herramienta, responde: {{"multi_tool": false}}
 Si necesita VARIAS en secuencia, responde EXACTAMENTE este formato:
@@ -852,6 +854,14 @@ Ejemplo 2 (buscar un fix + ejecutarlo — usar este patrón cuando el usuario pi
  "pasos": [
 {{ "tool": "web", "instruccion": "buscar cómo resolver el error X", "args": {{ "query": "error X fix" }} }},
 {{ "tool": "shell", "instruccion": "ejecutar el comando encontrado que resuelve el error X", "args": {{}} }}
+]
+}}
+Ejemplo 3 (dos acciones independientes encadenadas — usar este patrón cuando el usuario pide dos cosas separadas sin relación de datos entre sí, ej: "ejecuta X y buscame Y", "abrí X y después buscá Z"):
+{{
+ "multi_tool": true,
+ "pasos": [
+{{ "tool": "launch", "instruccion": "abrir/ejecutar la aplicación X", "args": {{ "app": "X" }} }},
+{{ "tool": "web", "instruccion": "buscar Y en internet", "args": {{ "query": "Y" }} }}
 ]
 }}
 Responde SOLO el JSON, sin explicaciones."""
@@ -897,6 +907,10 @@ Responde SOLO el JSON, sin explicaciones."""
         return None
 
     if not data.get("multi_tool") or not isinstance(data.get("pasos"), list):
+        print(
+            "   └─ [PLANNER]: el LLM decidió multi_tool=false (o sin 'pasos' válido) para "
+            f"una orden que la heurística marcó como multi-tool. JSON recibido: {data!r}"
+        )
         return None
 
     pasos_norm: list[dict] = []
@@ -1074,6 +1088,84 @@ def _extraer_comando_de_texto(texto: str) -> str | None:
         return m.group(1).strip()
 
     return None
+# Frases que Aether usa al OFRECER una búsqueda web en el turno anterior
+# (ej. "¿Querés que lo busque?", "¿Te lo busco?", "¿Quieres que te busque esto?").
+# Normalizadas con _normalizar (quita tildes/minúsculas), de modo que acá
+# guardamos ya la forma normalizada.
+_FRASES_OFERTA_BUSQUEDA = (
+    "queres que lo busque",
+    "queres que la busque",
+    "queres que te busque",
+    "queres que busque",
+    "quieres que lo busque",
+    "quieres que la busque",
+    "quieres que te busque",
+    "quieres que busque",
+    "que te lo busque",
+    "que yo busque",
+    "te lo busco",
+    "te la busco",
+    "te los busco",
+    "puedo buscar",
+    "puedo buscarlo",
+    "puedo buscarla",
+    "busco esto",
+    "busco un",
+    "busco una",
+    "voy a buscar",
+)
+
+
+def _es_oferta_busqueda_web(texto: str) -> bool:
+    """
+    Detecta si el último turno de Aether fue una OFERTA de búsqueda web
+    (ej. "¿Querés que lo busque?", "¿Te lo busco?", "¿Quieres que te busque
+    esto?").
+
+    Se exige que el turno sea una PREGUNTA (tenga '¿' o '?') y que mencione la
+    acción de buscar. Esto evita confundir frases descriptivas ("busco en la
+    web siempre...") con ofertas reales.
+    """
+    if not texto or not texto.strip():
+        return False
+    if "?" not in texto and "¿" not in texto:
+        return False
+    t_norm = _normalizar(texto)
+    if any(frase in t_norm for frase in _FRASES_OFERTA_BUSQUEDA):
+        return True
+    # "¿Busco eso?" / "¿Busco un precio?" — verbo en 1ª persona del presente
+    # con giro interrogativo.
+    return bool(re.search(r"\bbusco\b", t_norm))
+
+
+_CONFIRMACIONES_ACEPTACION = frozenset(
+    _normalizar(p) for p in (
+        "dale", "sí", "si", "ok", "okey", "okay", "confirmado", "confirmo",
+        "dale dale", "dale nomás", "dale nomas", "sí dale", "si dale",
+        "dale sí", "dale si", "claro", "seguro", "obvio", "por supuesto",
+        "sí sí", "si si", "dale ok", "dale listo",
+    )
+)
+
+
+def _es_confirmacion_aceptacion(orden_norm: str) -> bool:
+    """
+    True si la orden actual es una confirmación sencilla (aceptación) de una
+    oferta del turno anterior ("dale", "sí", "ok", "confirmado", ...).
+    Se exige que la orden sea corta (≤4 tokens) y que NO contenga negación
+    ("no dale" no es una aceptación), para no secuestrar órdenes más largas
+    que solo arrancan con "dale".
+    """
+    if not orden_norm or not orden_norm.strip():
+        return False
+    if re.search(r"\bno\b", orden_norm):
+        return False
+    if len(orden_norm.split()) > 4:
+        return False
+    return any(
+        re.search(rf"\b{re.escape(c)}\b", orden_norm)
+        for c in _CONFIRMACIONES_ACEPTACION
+    )
 
 
 def _resolver_referencia_anaforica(mem: dict, sesion_id: str = "") -> dict | None:
@@ -1105,27 +1197,43 @@ def _resolver_referencia_anaforica(mem: dict, sesion_id: str = "") -> dict | Non
     )
 
     # Último turno de Aether (rol jarvis/asistente/aether), buscando hacia atrás.
-    for t in reversed(turnos_sesion):
+    # También capturamos el turno del USUARIO inmediatamente anterior: cuando el
+    # turno de Aether es una OFERTA (ej. "¿Querés que lo busque?") el tema real
+    # (el QUÉ buscar) suele estar en ese pedido previo del usuario, no en la
+    # oferta en sí.
+    for i in range(len(turnos_sesion) - 1, -1, -1):
+        t = turnos_sesion[i]
         rol = str(t.get("rol", "")).lower()
-        if rol in ("jarvis", "assistant", "asistente", "aether"):
-            texto = str(t.get("texto", ""))
-            comando = _extraer_comando_de_texto(texto)
-            tema = str(t.get("tema", "")).strip().lower() or "desconocido"
-            if comando:
-                return {
-                    "command": comando,
-                    "tema": tema,
-                    "last_texto": texto,
-                }
-            # Sin comando extraíble, pero hay un turno previo de Aether con contenido.
-            # Útil para generalizar a "guardalo" (web/vision data), "mandaselo", etc.
-            if texto.strip():
-                return {
-                    "command": None,
-                    "tema": tema,
-                    "last_texto": texto,
-                }
-            break  # el turno más reciente de Aether no tenía payload usable
+        if rol not in ("jarvis", "assistant", "asistente", "aether"):
+            continue
+        texto = str(t.get("texto", ""))
+        comando = _extraer_comando_de_texto(texto)
+        tema = str(t.get("tema", "")).strip().lower() or "desconocido"
+
+        previo_usuario = ""
+        for j in range(i - 1, -1, -1):
+            r_prev = str(turnos_sesion[j].get("rol", "")).lower()
+            if r_prev in ("usuario", "user", "human"):
+                previo_usuario = str(turnos_sesion[j].get("texto", ""))
+                break
+
+        if comando:
+            return {
+                "command": comando,
+                "tema": tema,
+                "last_texto": texto,
+                "previo_usuario": previo_usuario,
+            }
+        # Sin comando extraíble, pero hay un turno previo de Aether con contenido.
+        # Útil para generalizar a "guardalo" (web/vision data), "mandaselo", etc.
+        if texto.strip():
+            return {
+                "command": None,
+                "tema": tema,
+                "last_texto": texto,
+                "previo_usuario": previo_usuario,
+            }
+        break  # el turno más reciente de Aether no tenía payload usable
 
     return None
 
@@ -1353,6 +1461,39 @@ def node_planner(state: AetherState) -> dict:
                 last_texto = ref.get("last_texto") or ""
                 o_norm = _normalizar(orden_lower)
 
+                # ═══════════════════════════════════════════════════════════
+                # OFERTA DE BÚSQUEDA DEL TURNO ANTERIOR + CONFIRMACIÓN
+                # ══════════════════════════════════════════════════════════
+                # Si Aether cerró el turno anterior con una OFERTA de búsqueda
+                # (ej. "¿Querés que lo busque?") y el usuario responde con una
+                # confirmación simple ("dale", "sí", "ok", "confirmado"), la
+                # intención es ACEPTAR esa búsqueda, no ejecutar un comando
+                # genérico. Este chequeo debe ir ANTES de _EXEC_REFS/parece_ejecutar
+                # (que termina en aclaración) porque palabras como "dale" matchean
+                # ambas listas y el branch de ejecución secuestraba la
+                # confirmación de la oferta, dejando inalcanzable parece_buscar.
+                parece_acepta_oferta_busqueda = (
+                    _es_confirmacion_aceptacion(o_norm)
+                    and _es_oferta_busqueda_web(last_texto)
+                )
+                if parece_acepta_oferta_busqueda:
+                    # La oferta ("¿Querés que lo busque?") no trae el tema a la
+                    # vista: el pedido real suele estar en el turno del usuario
+                    # inmediatamente anterior, así que lo incluimos como prefill.
+                    tema_para_buscar = last_texto
+                    previo_usuario = ref.get("previo_usuario") or ""
+                    if previo_usuario:
+                        tema_para_buscar = f"{previo_usuario[:500]} | {last_texto[:300]}"
+                    plan_paso = {
+                        "tool": "web",
+                        "instruccion": f"{orden}\n[tema del turno anterior a buscar]: {tema_para_buscar[:500]}",
+                        "args": {},
+                    }
+                    upd = _plan_activado([plan_paso], orden, mem)
+                    upd["plan_resultados"] = [tema_para_buscar[:2000]]
+                    print(f"   └─ Confirmación de oferta de búsqueda previa → web (tema_prev={tema_prev}, prefill)")
+                    return upd
+
                 _EXEC_REFS = ("ejecuta", "ejecutalo", "dale", "hacelo", "hazlo",
                               "corre", "anda", "procede", "adelante", "confirmado")
                 parece_ejecutar = any(
@@ -1383,6 +1524,27 @@ def node_planner(state: AetherState) -> dict:
                     print(f"   └─ Referencia anafórica generalizada → file_write (tema_prev={tema_prev}, prefill)")
                     return upd
 
+                # "buscá eso último", "buscalo en internet": el usuario quiere que
+                # AHORA sí se busque en la web el tema del que se venía hablando (típicamente
+                # porque Aether respondió "no tengo esos datos" en el turno anterior). Sin este
+                # branch caía al fallback genérico de más abajo (tool=web con la orden cruda),
+                # y _generar_query_busqueda no tiene forma de saber a qué se refiere "eso
+                # último" — generaba una query vacía/genérica que traía resultados basura
+                # (portada de Google, Chrome Trends, etc) y tardaba muchísimo en sintetizar.
+                # Prefillamos plan_resultados con la respuesta anterior de Aether para que el
+                # generador de query tenga el tema real (ej. "clima Rivera Uruguay mañana").
+                parece_buscar = any(k in o_norm for k in ("busca", "buscalo", "buscarlo", "buscame"))
+                if parece_buscar and last_texto.strip():
+                    plan_paso = {
+                        "tool": "web",
+                        "instruccion": f"{orden}\n[tema del turno anterior a buscar]: {last_texto[:500]}",
+                        "args": {},
+                    }
+                    upd = _plan_activado([plan_paso], orden, mem)
+                    upd["plan_resultados"] = [last_texto[:2000]]
+                    print(f"   └─ Referencia anafórica generalizada → web (tema_prev={tema_prev}, prefill)")
+                    return upd
+
                 print(f"   ─ Referencia anafórica generalizada (tema_prev={tema_prev}) → text")
                 return _plan_activado(
                     [{"tool": "text", "instruccion": orden}],
@@ -1397,6 +1559,31 @@ def node_planner(state: AetherState) -> dict:
             )
 
         print("   └─ Posible anafórica pero LLM determinó que es autosuficiente. Siguiendo flujo normal.")
+
+    # ══════════════════════════════════════════════════════════════════════
+    # AGENT LOOP: razónamiento y tool calling nativo
+    # ══════════════════════════════════════════════════════════════════════
+    # Acá termina la parte determinista de node_planner (charla simple,
+    # corrección del usuario, resolución anafórica -- casos legítimos de
+    # desambiguación conversacional, no elegían tool por keyword). Para
+    # todo lo demás YA NO se detecta intención por keywords
+    # (_detectar_intent_keywords, más abajo -- DEAD CODE, ver nota) ni se
+    # arma un plan JSON completo de antemano (_planner_llm): el modelo ve
+    # TODAS las tools disponibles (tool calling nativo de Ollama, ver
+    # tool_registry.construir_tools_ollama) y decide él mismo, paso a paso,
+    # qué usar -- incluyendo si hacía falta más de una, en qué orden, y qué
+    # hacer si una falla. node_agent_loop es un self-loop en el grafo (ver
+    # graph_builder.py) que corre hasta que el modelo devuelve una
+    # respuesta de texto en vez de una tool call -- sin límite de pasos
+    # fijado por código, el usuario corta desde la TUI si hace falta.
+    #
+    # NOTA: todo el bloque de abajo (detección por keywords, casos MCP/
+    # single-tool/multi-tool/fallback) quedó inalcanzable tras este return.
+    # Se deja sin borrar por ahora para no tocar más código del necesario en
+    # este cambio; es candidato a limpieza en un próximo pase una vez que el
+    # agent loop esté validado en uso real.
+    print("   └─ Sin atajo determinista aplicable → agent loop (razonamiento + tool calling nativo).")
+    return _agent_loop_activado(orden, mem)
 
     # ═══════════════════════════════════════════════════════════════════
     # DETECCIÓN DE INTENCIÓN
@@ -1497,6 +1684,208 @@ def node_planner(state: AetherState) -> dict:
 # ══════════════════════════════════════════════════════════════════════
 # NODO: ROUTER (DEPRECADO — conservado por compatibilidad)
 # ══════════════════════════════════════════════════════════════════════
+
+def _agent_loop_activado(orden: str, mem: dict) -> dict:
+    """Prepara el estado para arrancar (o continuar) el agent loop."""
+    return {
+        "orden":           orden,
+        "mem":             mem,
+        "plan_activo":     False,
+        "plan_pasos":      [],
+        "plan_index":      0,
+        "plan_resultados": [],
+        "agent_activo":    True,
+        "agent_messages":  [],
+        "agent_pasos_log": [],
+        "done":            False,
+    }
+
+
+def _llm_chat_agente(messages: list, tools: list, min_predict: int | None = None) -> dict:
+    """
+    Variante de _llm_chat para el agent loop (tool calling nativo).
+
+    _llm_chat() acumula solo texto del stream y DESCARTA cualquier
+    tool_calls que Ollama devuelva -- nadie lo necesitaba hasta ahora
+    porque nada consumía tool calling real. Esta función corre sin
+    streaming (más simple y confiable para extraer tool_calls que
+    reensamblarlos token a token) y devuelve tanto el texto como las
+    tool calls que el modelo haya decidido invocar, normalizadas a:
+
+        {"content": str, "tool_calls": [{"function": {"name": str, "arguments": dict}}, ...]}
+    """
+    opts = {"num_ctx": NUM_CTX, "num_predict": 2048}
+    opts.update(OLLAMA_GEN_OPTIONS)
+
+    config = get_config_manager()
+    opts.update(config.get("OLLAMA_GEN_OPTIONS", {}))
+    modelo_actual = config.get("MODELO", MODELO)
+    decision_modelo = choose_model(ModelDecisionContext(
+        task_kind="agent_loop",
+        requested_model=modelo_actual,
+        prompt_chars=sum(len(str(m.get("content", ""))) for m in messages),
+        context_size=config.get("NUM_CTX", NUM_CTX),
+    ))
+    opts["num_ctx"] = config.get("NUM_CTX", NUM_CTX)
+    opts["num_predict"] = config.get("NUM_PREDICT", opts["num_predict"])
+    opts["temperature"] = config.get("TEMPERATURE", opts.get("temperature", 0.6))
+    if min_predict:
+        opts["num_predict"] = max(opts["num_predict"], min_predict)
+
+    policy_start = time.time()
+    try:
+        resp = ollama.chat(
+            model=decision_modelo.model,
+            messages=messages,
+            tools=tools,
+            stream=False,
+            options=opts,
+            keep_alive=OLLAMA_KEEP_ALIVE,
+        )
+    finally:
+        record_model_latency(decision_modelo, int((time.time() - policy_start) * 1000))
+
+    msg = resp.get("message", {}) if isinstance(resp, dict) else getattr(resp, "message", {})
+    if not isinstance(msg, dict):
+        # El cliente ollama-python puede devolver un objeto Message en vez
+        # de un dict según la versión -- normalizamos a dict acá para no
+        # duplicar chequeos de tipo más abajo.
+        msg = {
+            "content": getattr(msg, "content", "") or "",
+            "tool_calls": getattr(msg, "tool_calls", None) or [],
+        }
+
+    tool_calls: list[dict] = []
+    for tc in (msg.get("tool_calls") or []):
+        fn = tc.get("function", {}) if isinstance(tc, dict) else getattr(tc, "function", {})
+        if isinstance(fn, dict):
+            nombre = fn.get("name", "")
+            args = fn.get("arguments", {})
+        else:
+            nombre = getattr(fn, "name", "")
+            args = getattr(fn, "arguments", {})
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except Exception:
+                args = {}
+        if not isinstance(args, dict):
+            args = {}
+        tool_calls.append({"function": {"name": nombre, "arguments": args}})
+
+    return {"content": msg.get("content", "") or "", "tool_calls": tool_calls}
+
+
+def node_agent_loop(state: AetherState) -> dict:
+    """
+    Un paso del agent loop: el modelo ve el objetivo + todas las tools
+    disponibles (schema completo, no un subconjunto pre-filtrado) y decide
+    él mismo qué hacer -- llamar una o varias tools, o responder.
+
+    Es un self-loop en el grafo (como antes lo era plan_executor): cada
+    invocación hace UNA ronda de razonamiento + ejecución de las tool
+    calls que haya, y vuelve a entrar mientras agent_activo=True. Termina
+    cuando el modelo devuelve texto sin tool_calls (respuesta final) o si
+    ocurre un error irrecuperable llamando al modelo.
+
+    Reutiliza get_node_func() -- los mismos nodos reales (node_web,
+    node_shell, etc.) que usaba plan_executor -- así que no hay ejecución
+    de tools duplicada entre el camino viejo (fast-paths deterministas) y
+    el nuevo (agent loop).
+    """
+    from core.agent.tool_registry import construir_tools_ollama, validar_tool_call, get_node_func
+
+    mem   = state.get("mem", {})
+    orden = state["orden"]
+
+    agent_messages  = list(state.get("agent_messages") or [])
+    agent_pasos_log = list(state.get("agent_pasos_log") or [])
+
+    if not agent_messages:
+        agent_messages = [
+            {"role": "system", "content": _system_prompt(mem, state)},
+            {"role": "user", "content": orden},
+        ]
+        print("\n🔁 [AGENT LOOP]: Iniciando razonamiento con tool calling nativo...")
+
+    tools = construir_tools_ollama()
+
+    try:
+        respuesta = _llm_chat_agente(agent_messages, tools, min_predict=_num_predict_planner())
+    except Exception as e:
+        print(f"   └─ ❌ [AGENT LOOP]: Error llamando al modelo: {e}")
+        return {
+            "final_response": f"No pude completar el razonamiento: {e}",
+            "done":           True,
+            "agent_activo":   False,
+        }
+
+    tool_calls = respuesta.get("tool_calls") or []
+    contenido  = (respuesta.get("content") or "").strip()
+
+    # Sin tool calls → el modelo decidió que ya puede responder: fin del loop.
+    if not tool_calls:
+        _, texto_final = _parse_ornith_thinking(contenido)
+        print(f"   └─ [AGENT LOOP]: Respuesta final tras {len(agent_pasos_log)} paso(s) de tool calling.")
+        return {
+            "final_response": texto_final or contenido,
+            "done":           True,
+            "agent_activo":   False,
+            "agent_messages": agent_messages + [{"role": "assistant", "content": contenido}],
+        }
+
+    agent_messages = agent_messages + [{
+        "role": "assistant",
+        "content": contenido,
+        "tool_calls": tool_calls,
+    }]
+
+    resultados_previos = [p["resultado"] for p in agent_pasos_log]
+
+    for call in tool_calls:
+        fn   = call.get("function", {})
+        tool = fn.get("name", "")
+        args = fn.get("arguments", {}) or {}
+
+        ok, motivo = validar_tool_call(tool, args)
+        if not ok:
+            print(f"   └─ ⚠️  [AGENT LOOP]: Sanity-check rechazó tool call '{tool}': {motivo}")
+            resultado = f"[ERROR] Llamada inválida a '{tool}': {motivo}"
+        else:
+            print(f"\n🔧 [AGENT LOOP]: Paso {len(agent_pasos_log) + 1} → tool={tool} args={args}")
+            instruccion = _instruccion_de_paso({"args": args}) or orden
+            sub_estado = dict(state)
+            sub_estado["orden"]           = _construir_orden_paso(instruccion, args, resultados_previos)
+            sub_estado["error_activo"]    = False
+            sub_estado["error_mensaje"]   = ""
+            sub_estado["final_response"]  = None
+            try:
+                node_func   = get_node_func(tool)
+                salida_nodo = node_func(sub_estado) or {}
+                resultado   = _extraer_resultado_paso(salida_nodo, tool)
+                if not resultado and salida_nodo.get("error_activo"):
+                    resultado = f"[ERROR] {salida_nodo.get('error_mensaje', 'fallo desconocido')}"
+            except Exception as e:
+                print(f"   └─ ❌ Excepción ejecutando tool '{tool}': {e}")
+                resultado = f"[ERROR] Excepción ejecutando '{tool}': {e}"
+
+        agent_pasos_log.append({"tool": tool, "args": args, "resultado": resultado})
+        resultados_previos.append(resultado)
+        # role="tool" es el formato que Ollama espera para devolverle al
+        # modelo el resultado de una tool call en el siguiente turno.
+        agent_messages.append({
+            "role":    "tool",
+            "content": (resultado or "")[:4000],
+            "name":    tool,
+        })
+
+    return {
+        "agent_messages":  agent_messages,
+        "agent_pasos_log": agent_pasos_log,
+        "agent_activo":    True,
+        "done":            False,
+    }
+
 
 def node_router(state: AetherState) -> dict:
     """[DEPRECADO] Ya NO está cableado en el grafo. Usa node_planner."""

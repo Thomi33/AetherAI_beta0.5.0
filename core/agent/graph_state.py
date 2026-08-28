@@ -25,11 +25,16 @@ class AetherState(TypedDict):
     tokens:         list          # tokens de streaming acumulados
     ruta:           str           # ruta de debug
 
-    # ── Tool Planning ────────────────────────────────────────────────
+    # ── Tool Planning (legacy: fast-paths deterministas de node_planner) ─
     plan_activo:    bool          # True si hay un plan multi-tool en ejecución
     plan_pasos:     list[dict]    # [{"tool": "web", "query": "..."}, {"tool": "shell", ...}]
     plan_index:     int           # índice del paso actual
     plan_resultados: list[str]    # resultados de cada paso ejecutado
+
+    # ── Agent Loop (tool calling nativo, sin plan armado de antemano) ────
+    agent_activo:    bool          # True mientras el agent loop sigue corriendo
+    agent_messages:  list          # transcript formato Ollama (system/user/assistant/tool)
+    agent_pasos_log: list[dict]    # [{"tool":..., "args":..., "resultado":...}, ...] para debug/síntesis
 
     # ── Mensajes LangChain ───────────────────────────────────────────
     messages:       list[BaseMessage]
@@ -130,6 +135,10 @@ def crear_estado_inicial(orden: str, mem: dict, modo_autonomo: bool = True) -> "
         "plan_pasos":      [],
         "plan_index":      0,
         "plan_resultados": [],
+
+        "agent_activo":    False,
+        "agent_messages":  [],
+        "agent_pasos_log": [],
 
         # ── Mensajes ─────────────────────────────────────────────────
         "messages":      [],
