@@ -107,7 +107,7 @@ case "${1:-}" in
   -h|--help)
     sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
     ;;
-  -V|--version)
+  version|-V|--version)
     exec "$PY" bin/aether_run.py version
     ;;
   -t|--task|task)

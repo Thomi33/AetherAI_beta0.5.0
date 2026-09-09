@@ -203,7 +203,7 @@ Cómo funciona:
   (`[DIRECTORIO DE TRABAJO]` en `prompts.py`), así que no necesita `cd`.
 - Rutas **absolutas o con `~`** se respetan tal cual. La DB, logs y memoria
   del agente siguen viviendo en `~/Aether` (`BASE_AETHER`): el directorio de
-  trabajo solo define **dónde se crean/leejecutan tus archivos**.
+  trabajo solo define **dónde se crean/leen/ejecutan tus archivos**.
 - La TUI muestra un banner al abrir (`Trabajando en: <ruta>`) y el título de
   la ventana lleva el nombre de la carpeta.
 
