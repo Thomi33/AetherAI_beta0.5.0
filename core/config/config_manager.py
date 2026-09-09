@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import threading
 import time
@@ -56,7 +57,11 @@ class ConfigChangeEvent:
 class ConfigValidator:
     """Validador de configuraciones."""
     
-    VALID_MODELS = ["ornith:9b", "ornith:7b", "qwen3.5:9b", "qwen2.5vl:7b", "hf.co/deepreinforce-ai/Ornith-1.0-35B-GGUF:q4_K_M"]
+    VALID_MODELS = ["ornith:9b", "ornith:7b", "ornith-1.5:9b", "qwen3.5:9b",
+                    "qwen2.5vl:7b", "qwen2.5:7b", "qwen2.5:3b", "qwen2.5:1.5b",
+                    "moondream", "minicpm-v", "minicpm-v4.6:latest",
+                    "hf.co/deepreinforce-ai/Ornith-1.0-35B-GGUF:q4_K_M",
+                    "hf.co/deepreinforce-ai/Ornith-1.0-35B-GGUF:Q4_K_M"]
     VALID_PROVIDERS = ["Ollama", "OpenAI", "Groq"]
     VALID_TEMP_RANGE = (0.0, 2.0)
     VALID_MAX_TOKENS_RANGE = (1, 8192)
@@ -113,7 +118,13 @@ class ConfigValidator:
     
     @staticmethod
     def validate_model(value: Any) -> bool:
-        return value in ConfigValidator.VALID_MODELS
+        # Acepta el catálogo + cualquier tag Ollama razonable (familia:variante),
+        # porque el instalador elige modelo según RAM/VRAM de cada máquina.
+        if value in ConfigValidator.VALID_MODELS:
+            return True
+        if isinstance(value, str) and re.match(r"^[a-zA-Z0-9][\w\-./]{1,80}(:[\w\-+.]{1,40})?$", value):
+            return True
+        return False
     
     @staticmethod
     def validate_provider(value: Any) -> bool:

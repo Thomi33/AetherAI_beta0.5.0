@@ -4,7 +4,19 @@ Escritura segura de archivos con auto-detección de extensión y ruta.
 import os
 import re
 
-from core.config.settings import CARPETA_AETHER
+from core.config import settings as _settings
+
+from core.config.settings import BASE_AETHER
+
+
+def _base_trabajo() -> str:
+    try:
+        rt = _settings.RUTA_TRABAJO
+        if rt.is_dir():
+            return str(rt)
+    except Exception:
+        pass
+    return str(BASE_AETHER)
 
 
 _EXT_MAP = {"txt": ".txt", "json": ".json", "md": ".md",
@@ -29,8 +41,8 @@ def _resolver_destino(orden: str) -> str:
     - Si la orden trae una ruta ABSOLUTA o con `~` (p.ej. ~/Documentos/x.txt,
       /tmp/y.md) → se respeta (expandiendo `~`).
     - Si trae un nombre/relativo (p.ej. precio.txt, sub/p.txt) → va dentro de
-      la carpeta dedicada CARPETA_AETHER (~/Aether).
-    - Si no trae nombre → nombre por defecto en CARPETA_AETHER.
+      RUTA_TRABAJO (el directorio desde el que se invocó a Aether).
+    - Si no trae nombre → nombre por defecto en RUTA_TRABAJO.
 
     Solo se busca el nombre en la parte de la orden ANTERIOR al bloque
     "[CONTEXTO DE PASOS PREVIOS]" para no confundir una URL de los resultados
@@ -44,7 +56,7 @@ def _resolver_destino(orden: str) -> str:
     if os.path.isabs(candidato):
         destino = candidato
     else:
-        destino = os.path.join(str(CARPETA_AETHER), candidato)
+        destino = os.path.join(_base_trabajo(), candidato)
     return os.path.abspath(destino)
 
 

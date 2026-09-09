@@ -42,7 +42,7 @@ BASE_AETHER     = Path.home() / "Aether"
 #
 # Verificá los que tenés con: ollama list
 # ─────────────────────────────────────────────────────────────────────
-MODELO_VISION   =  "qwen3-vl:8b"  # ← CAMBIÁ según lo que tengas instalado
+MODELO_VISION   =  "minicpm-v4.6:latest"  # ← CAMBIÁ según lo que tengas instalado
 
 # ───────────────────────────────────────────────────────
 # 🖱️  COMPUTER USE (loop percepción-acción: click/escribir vía ydotool)
@@ -98,10 +98,40 @@ BACKUPS_DIR   = MEMORIA_DIR / "backups"         # ← respaldos pre-rollback
 
 BASE_AETHER.mkdir(parents=True, exist_ok=True)
 
-# Carpeta DEDICADA para los archivos que Aether crea con file_write cuando el
-# usuario no especifica una ruta absoluta. Mantener los outputs separados del
-# código del proyecto y en un lugar predecible (~/Aether).
-CARPETA_AETHER = Path.home() / "Aether"
+# ─────────────────────────────────────────────────────────────────────
+# 🧩 SKILLS (core/skills/registry.py)
+# ─────────────────────────────────────────────────────────────────────
+# A diferencia de BASE_AETHER (datos de runtime, fuera del repo: ~/Aether),
+# las skills son comportamiento del agente -- viven DENTRO del proyecto para
+# versionarse junto al código.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+RUTA_SKILLS  = PROJECT_ROOT / "skills"
+
+# ─────────────────────────────────────────────────────────────────────
+# 📁 CARPETA DE TRABAJO (feature: Aether trabaja sobre la ruta desde la
+# que se lo abrió, con autorización explícita -- ver core/config/dir_authorization.py)
+# ─────────────────────────────────────────────────────────────────────
+# bin/aether hace `cd "$AETHER_HOME"` antes de ejecutar Python (para que
+# imports y venv resuelvan siempre igual) -- por eso os.getcwd() en runtime
+# YA NO es la carpeta desde la que el usuario lo invocó. bin/aether exporta
+# AETHER_CWD con el $PWD original ANTES de ese cd (o lo que pidió --workdir).
+# Si Aether se corre directo (python run.py, sin pasar por bin/aether) no
+# hay AETHER_CWD seteada y usamos os.getcwd() tal cual.
+#
+# OJO: se resuelve LAZY (PEP 562, __getattr__ abajo) porque AETHER_CWD /
+# --workdir pueden llegar DESPUÉS de los imports (argparse corre tras ellos).
+# Cada acceso a settings.RUTA_TRABAJO reevalúa la env var. NO hacer
+# `from ... import RUTA_TRABAJO` una sola vez y cachearlo: accedé vía
+# `settings.RUTA_TRABAJO` o reimportá. Los módulos ya migrados son:
+# filesystem_tool, file_writer, shell_executor, prompts.
+def _resolver_ruta_trabajo() -> Path:
+    return Path(os.environ.get("AETHER_CWD") or os.getcwd()).resolve()
+
+
+def __getattr__(name: str):
+    if name == "RUTA_TRABAJO":
+        return _resolver_ruta_trabajo()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 MAX_HISTORIAL = 100000
 

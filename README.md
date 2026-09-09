@@ -1,15 +1,16 @@
 # 🤖 Aether — Agente Local Inteligente (CLI)
 
-Aether (persona **"Javier"**) es un agente de IA **local y terminal-first** para
+Aether es un agente de IA **local y terminal-first** para
 **Arch Linux**. Corre 100 % en tu máquina sobre **[Ollama](https://ollama.com)**
 y se orquesta con **[LangGraph](https://langchain-ai.github.io/langgraph/)**.
 Conversa, busca en la web, ejecuta comandos de shell, lanza aplicaciones, mira
 la pantalla, genera y ejecuta código, gestiona su memoria y guarda archivos —
 encadenando varias herramientas cuando la tarea lo requiere.
 
-> **Motor único — Tool Planning.** El `planner` es la **única puerta de
-> decisión**: siempre produce un *plan* (lista de pasos). Una tarea simple es
-> un plan de 1 paso; una compleja es un plan multi-herramienta. Ver
+> **Motor híbrido — planificación + agent loop.** El `planner` resuelve los
+> fast-paths triviales y prepara el contexto; para tareas abiertas, el
+> `agent_loop` entrega al modelo el catálogo completo de herramientas y deja que
+> decida qué invocar, con qué argumentos y cuándo terminar. Ver
 > [`TOOL_PLANNING.md`](./TOOL_PLANNING.md) y
 > [`PLANNING_QUICKSTART.md`](./PLANNING_QUICKSTART.md).
 
@@ -21,8 +22,10 @@ encadenando varias herramientas cuando la tarea lo requiere.
 
 ## 🧠 ¿Qué puede hacer? (Capacidades)
 
-Aether expone **8 herramientas** (`TOOL_REGISTRY` en
-`core/agent/tool_registry.py`). El planner elige una o varias por tarea:
+Aether expone herramientas nativas y MCP mediante un registro unificado
+(`TOOL_REGISTRY` en
+`core/agent/tool_registry.py`). El planner o el agent loop eligen una o varias
+por tarea:
 
 | Tool | Qué hace | Implementación |
 |---|---|---|
@@ -31,9 +34,15 @@ Aether expone **8 herramientas** (`TOOL_REGISTRY` en
 | `shell` | Genera y ejecuta un comando de sistema en **zsh** (con barreras de seguridad). | `node_shell` → `core/tools/shell_executor.py` |
 | `launch` | Abre/lanza una aplicación (**Flatpak** o binario en el `PATH`). | `node_launch` → `core/tools/flatpak_manager.py` |
 | `vision` | Captura la pantalla y la analiza con un modelo multimodal. | `node_vision` → `core/tools/vision.py` |
-| `codigo` | Genera código (**python/bash**) y lo ejecuta. | `node_codigo` |
+| `codigo` | Genera código (**python/bash/java**), lo guarda si se indica una ruta y lo ejecuta. | `node_codigo` |
 | `memory` | Gestiona la memoria del agente (ver/borrar/recordar); si no reconoce el pedido, responde como charla. | `node_memory` |
 | `file_write` | Guarda el resultado de un paso anterior (o un texto) en un archivo. | `node_file_write` → `core/tools/file_writer.py` |
+| `computer_use` | Controla mouse/teclado y observa la pantalla para completar un objetivo. | `node_computer_use` |
+| `mcp` | Invoca herramientas de servidores MCP conectados. | `node_mcp` |
+| `fs_write` | Escribe uno o varios archivos con rutas y contenido explícitos; los lotes se revierten si fallan. | `node_fs_write` → `core/tools/filesystem_tool.py` |
+| `fs_read` | Lee un archivo de texto por ruta. | `node_fs_read` |
+| `fs_mkdir` | Crea un directorio y sus padres. | `node_fs_mkdir` |
+| `fs_list` | Lista archivos y subdirectorios. | `node_fs_list` |
 
 **Ejemplo de encadenamiento (multi-tool):**
 
@@ -44,9 +53,13 @@ Aether expone **8 herramientas** (`TOOL_REGISTRY` en
    └─ Posible multi-tool, consultando LLM...
    └─ Plan multi-tool válido: 2 pasos
 1. 🔍 web   → busca el precio de Bitcoin
-2. 💾 file_write → guarda el resultado en ~/Aether/precio.txt
-🎙️  Javier: Listo, guardé el precio de Bitcoin en ~/Aether/precio.txt
+2. 💾 file_write → guarda el resultado en ./precio.txt (tu directorio actual)
+🎙️  Aether: Listo, guardé el precio de Bitcoin en ./precio.txt
 ```
+
+> Desde la versión con directorio de trabajo, las rutas relativas se
+> resuelven en **el directorio desde donde invocaste `aether`**
+> (`RUTA_TRABAJO`), no en `~/Aether`. Las absolutas/`~` se respetan igual.
 
 ---
 
@@ -69,13 +82,14 @@ mi_proyecto_crew/
 ├── core/                       # 🧠 Motor del agente (LangGraph + Ollama)
 │   ├── agent/
 │   │   ├── graph_builder.py    #   Construye y compila el grafo (get_graph)
-│   │   ├── graph_nodes.py      #   Nodos: planner, intent gate, executor, tools, synthesizer, error handler
+│   │   ├── graph_nodes.py      #   Nodos: planner, agent loop, executor, tools, synthesizer, error handler
 │   │   ├── graph_state.py      #   AetherState + crear_estado_inicial() (factory)
 │   │   ├── tool_registry.py    #   TOOL_REGISTRY + validar_plan()
 │   │   ├── prompts.py          #   Persona de ejecución ([SHELL]) + persona de charla (construir_persona_chat)
 │   │   └── error_handler.py    #   Diagnóstico/reintento (legado; el handler activo está en graph_nodes)
 │   ├── config/
-│   │   └── settings.py         #   Modelos, hosts, rutas, límites de contexto
+│   │   ├── settings.py         #   Modelos, hosts, rutas, límites de contexto + RUTA_TRABAJO
+│   │   └── dir_authorization.py #  Autorización explícita del dir. de trabajo (~/.aether/allowed_dirs.json)
 │   ├── memory/
 │   │   ├── memory_manager.py   #   Memoria RAM + API pública (delega en store/)
 │   │   ├── context_builder.py  #   Arma el contexto que se inyecta al prompt
@@ -86,9 +100,10 @@ mi_proyecto_crew/
 │   ├── parser/
 │   │   ├── shell_parser.py     #   Extrae [SHELL]...[/SHELL]
 │   │   └── response_parser.py  #   Análisis de salida (LLM)
+│   ├── skills/                 #   Registro de instrucciones reutilizables
 │   ├── tools/                  #   Implementación de cada herramienta
 │   │   ├── web_search.py  url_reader.py  shell_executor.py
-│   │   ├── flatpak_manager.py  vision.py  file_writer.py
+│   │   ├── flatpak_manager.py  vision.py  file_writer.py  filesystem_tool.py
 │   ├── services/
 │   │   └── graph_service.py    #   procesar_orden_grafo() — entrada única al motor
 │   └── utils/intent_utils.py
@@ -146,6 +161,7 @@ mkdir -p ~/.local/bin && ln -sf "$(pwd)/bin/aether" ~/.local/bin/aether
 # 2) Usarlo desde CUALQUIER directorio:
 aether                            # TUI moderna (como python run.py)
 aether task "busca el precio de Bitcoin y guárdalo en precio.txt"  # one-shot
+aether --workdir ~/Proyecto task "creá main.py con hola mundo"     # otro dir.
 aether cli                        # loop interactivo simple sin Textual
 aether doctor                     # diagnóstico del entorno
 aether --version                  # versión del runtime
@@ -155,10 +171,52 @@ aether --help                     # ayuda completa
 - **`aether task "ORDEN"`** ejecuta una sola orden contra el grafo y devuelve
   la respuesta final. Ideal para **scripts, cron o atajos de teclado**.
 - **`aether doctor`** verifica python/venv, dependencias, `ollama list`,
-  config y la DB de producción (`~/Aether/db/current.db`).
+  config, la DB de producción (`~/Aether/db/current.db`) y el directorio de
+  trabajo actual (autorizado o nuevo).
 - Forzar otro intérprete: `AETHER_PYTHON=/ruta/al/python aether`.
 - En Arch, si el repo se clona a otra carpeta, volvé a apuntar el symlink y
   listo — el launcher siempre arranca en la raíz del proyecto automáticamente.
+
+### 📁 Directorio de trabajo: Aether opera donde estés parado
+
+Aether **trabaja sobre el directorio desde el que lo invocás**, no encerrado
+en `~/Aether`. Si estás en `~/Documents`, crea/lee/ejecuta ahí; si estás en
+`~/Proyecto`, ahí; si estás en tu home, ahí:
+
+```bash
+cd ~/Documents && aether                    # crea "notas.txt" en ~/Documents
+cd ~/Proyecto && aether task "listá los archivos"   # lista ~/Proyecto
+aether --workdir ~/Proyecto task "creá main.py"     # explícito, desde donde sea
+```
+
+Cómo funciona:
+
+- `bin/aether` captura tu `$PWD` **antes** de entrar a la carpeta del
+  proyecto (ese `cd` interno es solo para que imports y venv resuelvan
+  siempre igual) y lo exporta como `AETHER_CWD`.
+- `core/config/settings.py` expone `RUTA_TRABAJO` (= `AETHER_CWD`, o el
+  `--workdir` que pases, o el cwd si corrés `python run.py` directo).
+- Las tools ya operan ahí: rutas **relativas** (`notas.txt`, `sub/app.py`)
+  se resuelven dentro del directorio de trabajo (`filesystem_tool`,
+  `file_writer`); los comandos **shell corren con `cwd=RUTA_TRABAJO`**
+  (`shell_executor`); el modelo recibe la ruta real en su system prompt
+  (`[DIRECTORIO DE TRABAJO]` en `prompts.py`), así que no necesita `cd`.
+- Rutas **absolutas o con `~`** se respetan tal cual. La DB, logs y memoria
+  del agente siguen viviendo en `~/Aether` (`BASE_AETHER`): el directorio de
+  trabajo solo define **dónde se crean/leejecutan tus archivos**.
+- La TUI muestra un banner al abrir (`Trabajando en: <ruta>`) y el título de
+  la ventana lleva el nombre de la carpeta.
+
+**Autorización explícita (una sola vez por directorio):**
+
+Como esto implica escribir/ejecutar fuera del sandbox original, cada
+directorio nuevo pide confirmación la primera vez (`¿Autorizar a Aether a
+trabajar en <ruta>? [S/n]`) y queda registrado en
+`~/.aether/allowed_dirs.json` (`core/config/dir_authorization.py`). Rutas del
+sistema (`/etc`, `/sys`, `/proc`, `/root`, …) siempre requieren confirmación
+por comando aunque el directorio padre esté autorizado. Sin TTY
+(scripts/cron), el directorio se registra silenciosamente y se informa en el
+banner/`doctor`.
 
 ### Opción 1 — Entrypoint principal (recomendado)
 ```bash
@@ -188,9 +246,8 @@ Hace lo mismo (precalienta el grafo y abre el loop interactivo), con su propio
 ```
 python run.py
    └─► cli/main.py                       (loop de terminal)
-         └─► backend/core/aether_service.py::AetherService   (singleton + memoria en RAM)
-               └─► core/services/graph_service.py::procesar_orden_grafo()
-                     └─► core/agent/graph_builder.py::get_graph()   (grafo LangGraph)
+         └─► core/services/graph_service.py::procesar_orden_grafo()
+               └─► core/agent/graph_builder.py::get_graph()   (grafo LangGraph)
 ```
 
 Cada orden del usuario se transforma en un `AetherState`
@@ -199,8 +256,8 @@ memoria** para evitar `KeyError`) y se ejecuta a través del grafo.
 
 ### Flujo del grafo (LangGraph)
 ```
-START → planner → plan_executor (loop)
-      → [ finalize (charla/narrativa) | plan_synthesizer → finalize (multi-tool o acción) ] → END
+START → planner → context_manager → [ plan_executor | agent_loop ]
+      → plan_synthesizer/finalize → END
 
 Si un paso marca error_activo:
   plan_executor → error_diagnose → error_confirm → error_retry
@@ -208,24 +265,25 @@ Si un paso marca error_activo:
         → (sigue fallando, hasta el límite) error_fallback
 ```
 
-- **`planner`** (`node_planner`) — única decisión. Estrategia (en orden):
+- **`planner`** (`node_planner`) — resuelve sólo las decisiones iniciales. Estrategia (en orden):
   0. **Fast-path de charla** (determinista, sin LLM): saludos, agradecimientos y
      small talk → plan de 1 paso `text` en *modo chat*.
   1. **Keywords deterministas** (prioridad `memory → vision → launch → web → codigo`).
      Si hay intención clara y la tarea **no** parece multi-tool → plan de 1 paso.
-  2. Si parece encadenar acciones (un conector como *"y luego"*, *"y guarda"* + ≥2
-     categorías de herramienta) → pide un **plan multi-tool al LLM** y lo valida con
-     `validar_plan()`.
-  3. **Intent gate (LLM)**: si no hubo keyword ni fast-path, el modelo **razona**
-     si hace falta una herramienta o si es charla; *default* seguro a `text`. El
-     planner **nunca rompe el flujo**.
-- **`plan_executor`** (`node_plan_executor`) — ejecuta cada paso despachando al
+  2. Las órdenes abiertas activan el `agent_loop`, en lugar de forzar una
+     herramienta por keywords.
+- **`agent_loop`** (`node_agent_loop`) — usa tool calling nativo de Ollama con
+  los schemas de `TOOL_PARAMETROS`. Ejecuta las llamadas estructuradas,
+  devuelve sus resultados al modelo y repite hasta que el modelo responde sin
+  más herramientas.
+- **`plan_executor`** (`node_plan_executor`) — conserva el fast-path determinista
+  y ejecuta cada paso despachando al
   **nodo real** vía `TOOL_REGISTRY` (no reimplementa las tools). Acumula
   resultados, inyecta el contexto de pasos previos y captura errores por paso.
   Poda el historial según el caso: aislado en multi-tool, ventana chica en charla.
 - **`plan_synthesizer`** (`node_plan_synthesizer`) — redacta la respuesta final
   con el modelo: en planes multi-paso sintetiza todos los resultados; en una
-  **acción** de 1 paso (`launch`/`shell`/`codigo`/`file_write`) genera un cierre
+**acción** de 1 paso (`launch`/`shell`/`codigo`/`file_write`/`fs_write`) genera un cierre
   natural (qué se hizo, si salió bien y una frase amena, p.ej. *"¡que disfrutes la
   música!"*). Las tools narrativas (`text`/`web`/`vision`/`memory`) van directo a
   `finalize`.
@@ -234,6 +292,13 @@ Si un paso marca error_activo:
   (incluso buscando en la web), propone un *fix*, pide confirmación, reintenta
   hasta un límite y, si todo falla, aplica una estrategia alternativa
   (`error_fallback`). Al resolver, **reanuda el plan**.
+
+### Skills reutilizables
+Las carpetas `skills/<nombre>/SKILL.md` contienen instrucciones para tareas
+recurrentes. Cada archivo declara `name` y `description` en frontmatter; el
+catálogo se inyecta en el system prompt y el modelo puede leer la skill completa
+con `fs_read` cuando corresponde. Agregar una skill no requiere modificar código
+ni reiniciar el proceso. Ver [`skills/README.md`](./skills/README.md).
 
 ### Modelo "thinking"
 `ornith:9b` separa su razonamiento (`thinking`) de la respuesta final. El
@@ -309,6 +374,9 @@ correr cualquier comando:
 - **Lanza apps GUI en segundo plano** (Flatpaks, Steam, navegadores, scripts
   `.py`, etc.) para no bloquear el loop.
 - **Timeout** de `TIMEOUT_CMD = 60s` para comandos estándar.
+- **Directorio de ejecución = tu directorio de trabajo**: cada comando corre
+  con `cwd=RUTA_TRABAJO` (desde dónde invocaste `aether` o `--workdir`), no
+  en la carpeta del proyecto. Ver sección 📁 en "Ejecutar Aether".
 
 Además, el *prompt* del sistema (`core/agent/prompts.py`) obliga al modelo a usar
 el protocolo `[SHELL] <comando> [/SHELL]`, a **no inventar salidas** de la
@@ -333,7 +401,8 @@ terminal y a usar herramientas de Arch (`pacman`/`yay`/`flatpak`, nunca
 | `MAX_TURNOS_CONTEXTO_PLAN` | `0` | Historial inyectado durante pasos de un plan multi-tool (0 = aislado) |
 | `MAX_TURNOS_CONTEXTO_CHAT` | `10` | Historial inyectado en el camino de charla (ventana chica anti-contaminación) |
 | `BASE_AETHER` | `/mnt/nvme/Aether` | Carpeta base del agente (DB, logs, screenshots…). |
-| `CARPETA_AETHER` | `~/Aether` | Destino por defecto de los archivos que crea `file_write` |
+| `RUTA_TRABAJO` | `$AETHER_CWD` o cwd | **Directorio donde opera** (desde dónde invocaste `aether` o `--workdir`); ver sección 📁 arriba. Relativas de `fs_*`/`file_write` y `cwd` de shell. |
+| `CARPETA_AETHER` | `~/Aether` | Clave legacy = `BASE_AETHER`; fallback si el workdir no existe |
 | `OLLAMA_KEEP_ALIVE` | `-1` | Mantiene el modelo cargado en VRAM entre llamadas (↓ latencia) |
 | `OLLAMA_GEN_OPTIONS` | `{num_batch: 512}` | Opciones de generación extra (throughput); `num_gpu`/`num_thread` opcionales para forzar GPU |
 
@@ -343,14 +412,14 @@ terminal y a usar herramientas de Arch (`pacman`/`yay`/`flatpak`, nunca
 
 ```
 🧠 Creador: ¿cuál es la capital de España?
-🎙️  Javier: La capital de España es Madrid...
+🎙️  Aether: La capital de España es Madrid...
 
 🧠 Creador: abre Firefox
 🚀 [Aether]: Lanzando Firefox...
-🎙️  Javier: Firefox lanzado.
+🎙️  Aether: Firefox lanzado.
 
 🧠 Creador: ¿qué ves en la pantalla?
-🎙️  Javier: Veo una terminal con...
+🎙️  Aether: Veo una terminal con...
 
 🧠 Creador: salir
 🤖 [SISTEMA] Desconectando sistemas. Hasta luego.

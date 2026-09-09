@@ -59,6 +59,12 @@ class AetherState(TypedDict):
     # ── Visión ───────────────────────────────────────────────────────
     vision_result:  str           # descripción retornada por ver_pantalla()
 
+    # ── FileSystemTool (fs_write/fs_read/fs_mkdir/fs_list) ──────────────
+    fs_result:      str           # dato crudo devuelto por los nodos fs_*
+    _tool_args:     dict          # args estructurados de la tool call actual
+                                   # (seteado por node_agent_loop; ver
+                                   # _args_del_paso en graph_nodes.py)
+
     # ── Computer use (loop percepción-acción) ───────────────────────
     computer_use_log:    list[dict]  # pasos ejecutados [{paso, accion, error}, ...]
     computer_use_result: str         # resumen en texto para plan_synthesizer
@@ -158,6 +164,8 @@ def crear_estado_inicial(orden: str, mem: dict, modo_autonomo: bool = True) -> "
         "web_results":      "",
         "mcp_result":       "",
         "vision_result":    "",
+        "fs_result":        "",
+        "_tool_args":       {},
         "computer_use_log":    [],
         "computer_use_result": "",
         "_codigo_original": "",

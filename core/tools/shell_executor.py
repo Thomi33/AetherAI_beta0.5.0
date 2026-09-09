@@ -28,13 +28,28 @@ _PATRONES_PELIGROSOS = [
 # Lista de editores interactivos prohibidos a nivel de sistema
 EDITORES_BANEADOS = ["nano", "vim", "vi", "micro", "emacs"]
 
-# Lanzadores gráficos o herramientas de monitoreo interactivo que deben correr en segundo plano
+# Lanzadores gráficos o herramientas de monitoreo interactivo que deben correr en segundo plano.
+#
+# FIX (bug real, sesión 2026-09-04): antes esto incluía
+# `python\s+-m\s+|python3?\s+\S+\.py` y `\./`, así que CUALQUIER ejecución
+# de un script Python (ej. "python3 /tmp/escribir.py", "python3
+# temp_converter.py") o de un ejecutable local ("./algo") se clasificaba
+# como lanzamiento GUI: se corría en background con stdout a DEVNULL y sin
+# esperar a que termine de verdad. Esto rompió tareas de escritura de
+# archivos vía heredoc (el ls posterior corría contra un archivo que todavía
+# no se había terminado de escribir, o el error quedaba silenciado) y
+# cualquier test rápido de un script ("python3 app.py") quedaba corriendo
+# en background en vez de mostrar su salida/error de forma síncrona.
+#
+# La detección de GUI ahora se limita a apps conocidas por nombre. Si en el
+# futuro hace falta lanzar un script Python como proceso GUI de larga
+# duración, el propio comando puede pedirlo explícitamente con `&` al final
+# (ver wants_pid_capture / "echo $!" más abajo) en vez de adivinarlo por el
+# nombre del archivo.
 _LANZADORES_GUI = re.compile(
     r"\b(flatpak\s+run|steam|lutris|heroic|bottles|gamescope"
     r"|nvtop|btop|htop|glxgears|obs|kdenlive|gimp|inkscape"
     r"|brave|electron|appimage|prismlauncher"
-    r"|python\s+-m\s+|python3?\s+\S+\.py"
-    r"|\./"
     r")",
     re.IGNORECASE,
 )
@@ -45,14 +60,29 @@ def _es_peligroso(cmd: str) -> bool:
     return any(re.search(p, cmd, re.IGNORECASE) for p in _PATRONES_PELIGROSOS)
 
 
-def ejecutar_comando(cmd: str) -> tuple[str, bool]:
+def ejecutar_comando(cmd: str, cwd: str | None = None) -> tuple[str, bool]:
     """
     Ejecuta comando en zsh con protección de seguridad integrada.
     Retorna (salida, hubo_error).
+    `cwd`: directorio de ejecución. Si es None usa RUTA_TRABAJO (el dir
+    desde el que se invocó a Aether), para que `ls`, `cat archivo.txt`,
+    `./script.sh` etc. operen sobre ~/Documents, ~/Proyecto, ... según
+    corresponda en vez de sobre la carpeta del proyecto Aether.
     """
     # 1. Validación de seguridad contra comandos destructivos
     if _es_peligroso(cmd):
         return "⛔ CANCELADO: Operación identificada como potencialmente destructiva.", True
+
+    # 1b. Directorio de ejecución: RUTA_TRABAJO por defecto (lazy: la env
+    # AETHER_CWD puede setearse después de los imports, así que NO se
+    # cachea en import — se lee acá en cada llamada).
+    if cwd is None:
+        try:
+            from core.config import settings as _s
+            _rt = _s.RUTA_TRABAJO
+            cwd = str(_rt) if _rt.is_dir() else None
+        except Exception:
+            cwd = None
 
     # 2. Interceptor de editores interactivos (Baneo a nivel de sistema)
     # Evita que se congele esperando entrada manual del usuario
@@ -90,6 +120,7 @@ def ejecutar_comando(cmd: str) -> tuple[str, bool]:
                 cmd, shell=True, executable="/bin/zsh",
                 stdout=stdout_target, stderr=tmp,
                 preexec_fn=os.setpgrp,
+                cwd=cwd or None,
             )
             tmp.close()
 
@@ -122,6 +153,7 @@ def ejecutar_comando(cmd: str) -> tuple[str, bool]:
         resultado = subprocess.run(
             cmd, shell=True, executable="/bin/zsh",
             capture_output=True, text=True, timeout=TIMEOUT_CMD,
+            cwd=cwd or None,
         )
         salida = (resultado.stdout + resultado.stderr).strip()
         return salida or "[Comando completado sin salida]", resultado.returncode != 0

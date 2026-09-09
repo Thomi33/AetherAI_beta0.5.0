@@ -42,6 +42,7 @@ node_error_retry    — ejecuta el fix propuesto
 node_error_fallback — estrategia alternativa sin web (PATH, variantes)
 """
 
+import os
 import re
 import difflib
 import shlex
@@ -64,6 +65,13 @@ from core.tools.computer_control import click_en, escribir_texto, mover_mouse
 from core.tools.flatpak_manager import buscar_flatpak_en_memoria, actualizar_flatpaks
 from core.parser.shell_parser import extraer_comando_shell
 from core.tools.file_writer import escribir_archivo
+from core.tools.filesystem_tool import (
+    escribir_archivo_fs,
+    escribir_archivos_fs,
+    leer_archivo_fs,
+    crear_directorio_fs,
+    listar_directorio_fs,
+)
 from core.events import get_event_bus, Event
 from core.config import get_config_manager
 from core.agent.model_policy import ModelDecisionContext, choose_model, record_model_latency
@@ -827,7 +835,7 @@ web: búsqueda en internet
 shell: ejecutar comandos de sistema (NO usar para guardar archivos, NI para listar o leer directorios/archivos si hay un servidor MCP disponible para ello)
 launch: abrir aplicaciones
 vision: capturar/analizar pantalla
-codigo: generar y ejecutar código
+codigo: generar código, guardarlo en un archivo si el usuario da un nombre/ruta (main.py, script.sh...), y ejecutarlo
 file_write: guardar el resultado del paso anterior en un archivo (usar SIEMPRE que el usuario pida guardar/escribir en archivo)
 mcp: invocar herramientas externas. IMPORTANTE: Si necesitas usar cualquiera de las herramientas MCP listadas abajo, DEBES poner en el campo tool la palabra exacta "mcp" (NO el nombre del servidor) y estructurar los args de esta manera exacta: {{"server": "nombre_del_servidor", "name": "nombre_de_la_tool", "arguments": {{...}}}}
 Servidores y herramientas MCP activas actualmente:
@@ -1342,7 +1350,7 @@ shell: comandos de sistema (ls, pip cache, df, procesos, archivos)
 launch: abrir/ejecutar/lanzar programas, aplicaciones, juegos (Flatpak o PATH). Ej: "ejecuta sober", "abre firefox", "quiero jugar roblox", "lanza el programa"
 vision: capturar y describir la pantalla (SOLO mirar, no actuar)
 computer_use: controlar el mouse/teclado sobre lo que se ve en pantalla (click, escribir, navegar, completar formularios) hasta cumplir un objetivo
-codigo: escribir y ejecutar código nuevo
+codigo: escribir código nuevo en un archivo (si el usuario menciona un nombre/ruta como main.py, se crea ahí) y ejecutarlo
 memory: recordar o gestionar datos del usuario
 mcp: invocar herramientas externas vía Model Context Protocol — esto incluye CUALQUIER pedido sobre repositorios/repos/GitHub (buscar, listar, consultar repos), páginas o notas de Notion, o archivos/directorios reales del sistema cuando se pide explícitamente por MCP
 text: charla normal, conversación, conocimiento general
@@ -1859,6 +1867,15 @@ def node_agent_loop(state: AetherState) -> dict:
             sub_estado["error_activo"]    = False
             sub_estado["error_mensaje"]   = ""
             sub_estado["final_response"]  = None
+            # Los args ESTRUCTURADOS de la tool call (path, content, files...)
+            # se pasan tal cual además del 'orden' en texto libre de arriba.
+            # Tools nuevas (fs_write/fs_read/fs_mkdir/fs_list) los leen de acá
+            # vía _args_del_paso() en vez de tener que adivinarlos parseando
+            # 'orden' -- ese parseo por regex es justamente el bug que rompía
+            # a node_file_write cuando se lo llamaba desde este loop (plan_pasos
+            # queda vacío acá, así que su lookup por plan_index nunca encontraba
+            # nada).
+            sub_estado["_tool_args"]      = args
             try:
                 node_func   = get_node_func(tool)
                 salida_nodo = node_func(sub_estado) or {}
@@ -2950,6 +2967,57 @@ def _detectar_extension_codigo(texto: str) -> str:
     return ".py"
 
 
+def _resolver_ruta_destino_codigo(orden: str, filename: str | None = None) -> str | None:
+    """
+    Resuelve el archivo donde el usuario quiere que QUEDEN los fuentes del
+    código generado por node_codigo.
+
+    Prioridad:
+      1. args['filename'] / 'ruta' / 'nombre' del paso del plan.
+      2. Ruta absoluta o relativa explícita en la orden (main.py, /tmp/x.sh,
+         ~/proyectos/app.py, subdir/foo.py).
+
+    Si no se menciona ningún archivo, retorna None → node_codigo solo
+    genera+ejecuta en el temporal (comportamiento histórico, sin crear un
+    fuente a la vista del usuario).
+
+    NOTA workdir: las rutas relativas se resuelven contra el cwd del proceso
+    Python. Como bin/aether hace `cd $AETHER_HOME` antes de ejecutar, el cwd
+    real es la carpeta del proyecto — PERO ejecutar_comando() ya corre con
+    cwd=RUTA_TRABAJO, así que `python3 main.py` / `./x.sh` operan sobre el
+    directorio de invocación igual. No se cambia abspath() acá para no romper
+    tests/test_write_code_fix.py.
+
+    MOTIVO (bug sesión 2026-09-04): antes node_codigo SIEMPRE guardaba
+    únicamente en /tmp/aether_code{ext} y respondía "Código guardado en
+    /tmp/...". El archivo que el usuario pedía (ej. main.py) NUNCA se creaba,
+    y Aether parecía "solo capaz de shell" para escribir archivos: no podía
+    materializar código fuente. Con esto, "creá un script main.py" escribe
+    main.py de verdad; las rutas absolutas/tilde se respetan, y las relativas
+    o nombres simples se resuelven contra el directorio de trabajo actual
+    (el proyecto en el que está corriendo Aether).
+    """
+    if filename and filename.strip():
+        return os.path.abspath(os.path.expanduser(filename.strip()))
+
+    cabecera = orden.split("[CONTEXTO DE PASOS PREVIOS]")[0] if isinstance(orden, str) else ""
+    if not cabecera:
+        return None
+    # Solo extensiones de código (NO .txt/.md/.json) para no confundir el
+    # nombre del fuente con texto descriptivo del pedido.
+    for ext in (".py", ".sh", ".java"):
+        for token in re.findall(
+            rf"(?:[~\w./\-\\]+{re.escape(ext)})\b", cabecera, re.IGNORECASE
+        ):
+            candidato = os.path.expanduser(
+                token.strip().strip('"\'`').rstrip(".,;:])>")
+            )
+            if not candidato or candidato.endswith("/"):
+                continue
+            return os.path.abspath(candidato)
+    return None
+
+
 def _cmd_para_extension(ext: str, archivo: str) -> str | None:
     return {
         ".py": f"python3 {archivo}",
@@ -2986,16 +3054,49 @@ def node_codigo(state: AetherState) -> dict:
     extension = _detectar_extension_codigo(llm_resp)
     archivo_tmp = f"/tmp/aether_code{extension}"
 
+    # ── Destino real del fuente ──────────────────────────────────────
+    # El usuario puede pedir explícitamente un archivo (main.py, /tmp/x.sh,
+    # ~/proyecto/app.py...). Antes esto se ignoraba y SOLO se escribía en el
+    # temporal, por lo que Aether no podía materializar el código que "escribía".
+    plan_pasos = state.get("plan_pasos") or []
+    plan_index = state.get("plan_index", 0)
+    idx_codigo = plan_index if isinstance(plan_index, int) and plan_index >= 0 else 0
+    paso_args_codigo = {}
+    if idx_codigo < len(plan_pasos) and isinstance(plan_pasos[idx_codigo], dict):
+        paso_args_codigo = plan_pasos[idx_codigo].get("args") or {}
+    filename_paso = (
+        paso_args_codigo.get("filename")
+        or paso_args_codigo.get("ruta")
+        or paso_args_codigo.get("nombre")
+    )
+    destino = _resolver_ruta_destino_codigo(orden, filename_paso)
+
+    # 1) Siempre guardamos el fuente en un temporal para ejecutarlo.
     with open(archivo_tmp, "w", encoding="utf-8") as f:
         f.write(codigo)
 
-    print(f"\n📄 [CÓDIGO]: Guardado en {archivo_tmp}")
+    # 2) Si el usuario dio una ruta/nombre → se escribe AHÍ también,
+    #    creando los directorios intermedios. Así "creá main.py" crea main.py.
+    ruta_final = archivo_tmp
+    if destino:
+        try:
+            os.makedirs(os.path.dirname(destino) or ".", exist_ok=True)
+            with open(destino, "w", encoding="utf-8") as f:
+                f.write(codigo)
+            ruta_final = destino
+            print(f"\n📄 [CÓDIGO]: Generado en {archivo_tmp} → guardado en {destino}")
+        except Exception as e:
+            print(f"⚠️  [CÓDIGO]: No se pudo guardar en {destino}: {e}")
+    else:
+        print(f"\n📄 [CÓDIGO]: Guardado en {archivo_tmp}")
 
     if not modo_auto:
         if not _confirmar_usuario(f"¿Ejecutar {archivo_tmp}?"):
             return {
                 "llm_response":   llm_resp,
-                "final_response": f"Código generado en {archivo_tmp} (no ejecutado).",
+                "final_response": f"Código generado en {ruta_final} (no ejecutado).",
+                "_codigo_original": codigo,
+                "_archivo_codigo":  ruta_final,
                 "messages":       [AIMessage(content=llm_resp)],
             }
 
@@ -3003,7 +3104,9 @@ def node_codigo(state: AetherState) -> dict:
     if not cmd_ejecutar:
         return {
             "llm_response":   llm_resp,
-            "final_response": f"Código guardado en {archivo_tmp}. No sé cómo ejecutarlo automáticamente.",
+            "final_response": f"Código guardado en {ruta_final}. No sé cómo ejecutarlo automáticamente.",
+            "_codigo_original": codigo,
+            "_archivo_codigo":  ruta_final,
             "messages":       [AIMessage(content=llm_resp)],
         }
 
@@ -3022,11 +3125,14 @@ def node_codigo(state: AetherState) -> dict:
             "error_mensaje":    salida,
             "error_contexto":   "codigo",
             "_codigo_original": codigo,
-            "_archivo_codigo":  archivo_tmp,
+            "_archivo_codigo":  ruta_final,   # ← el fuente real (no solo /tmp)
             "messages":         [AIMessage(content=llm_resp)],
         }
 
-    # Datos crudos en estado; Ornith sintetiza
+    # Datos crudos en estado; Ornith sintetiza.
+    # Guardamos SIEMPRE el fuente generado (codigo) y la ruta final para que
+    # plan_synthesizer informe dónde quedó el archivo y, si viene un paso
+    # file_write después, pueda guardar el CÓDIGO y no la salida del script.
     return {
         "llm_response":   llm_resp,
         "shell_command":  cmd_ejecutar,
@@ -3034,6 +3140,8 @@ def node_codigo(state: AetherState) -> dict:
         "shell_error":    False,
         "error_activo":   False,
         "final_response": None,   # ← Ornith sintetiza
+        "_codigo_original": codigo,
+        "_archivo_codigo":  ruta_final,
         "messages":       [AIMessage(content=llm_resp)],
     }
 
@@ -3568,7 +3676,26 @@ def node_file_write(state: AetherState) -> dict:
         paso_actual_args = plan_pasos[idx].get("args") or {}
     filename = paso_actual_args.get("filename") or paso_actual_args.get("nombre")
 
-    contenido = plan_resultados[-1] if plan_resultados else orden
+    # ── Qué contenido guardar ──────────────────────────────────────────
+    # Regla por defecto: el resultado del paso anterior (plan_resultados[-1]).
+    # EXCEPCIÓN: si el paso anterior fue 'codigo', el usuario quiere guardar
+    # el FUENTE generado (el código), NO la salida de ejecutarlo. node_codigo
+    # deja el fuente en state['_codigo_original'], mientras que
+    # plan_resultados[-1] trae el stdout del script (shell_output). Guardar
+    # la salida era el bug: el archivo quedaba con basura en vez del código.
+    codigo_fuente = state.get("_codigo_original")
+    paso_anterior = {}
+    if 0 <= idx - 1 < len(plan_pasos):
+        paso_anterior = plan_pasos[idx - 1]
+    tool_anterior = paso_anterior.get("tool") if isinstance(paso_anterior, dict) else None
+    if (
+        tool_anterior == "codigo"
+        and isinstance(codigo_fuente, str)
+        and codigo_fuente.strip()
+    ):
+        contenido = codigo_fuente
+    else:
+        contenido = plan_resultados[-1] if plan_resultados else orden
 
     contenido_limpio = re.sub(r"\[SHELL\].*?\[/SHELL\]", "", str(contenido), flags=re.DOTALL).strip()
     if not contenido_limpio:
@@ -3593,6 +3720,143 @@ def node_file_write(state: AetherState) -> dict:
 
 
 # ══════════════════════════════════════════════════════════════════════
+# NODOS: FILESYSTEM TOOL (fs_write / fs_read / fs_mkdir / fs_list)
+# ══════════════════════════════════════════════════════════════════════
+# Ver core/tools/filesystem_tool.py para el motivo. A diferencia de
+# file_write (que solo entiende plan_pasos/plan_index del plan_executor
+# viejo), estos nodos leen args ESTRUCTURADOS (path/content/files) sin
+# adivinar nada de texto libre -- funcionan tanto desde el agent loop
+# (sub_estado["_tool_args"], seteado en node_agent_loop) como, si algún día
+# el planner viejo arma un plan con estas tools, desde plan_pasos.
+
+def _args_del_paso(state: AetherState) -> dict:
+    """
+    Args explícitos de la tool call actual, sea cual sea el camino que
+    invocó al nodo:
+      1. Agent loop (tool calling nativo): state["_tool_args"].
+      2. plan_executor viejo: plan_pasos[plan_index]["args"].
+    """
+    args_directos = state.get("_tool_args")
+    if isinstance(args_directos, dict):
+        return args_directos
+
+    plan_pasos = state.get("plan_pasos") or []
+    idx = state.get("plan_index", 0)
+    if not isinstance(idx, int) or idx < 0:
+        idx = 0
+    if idx < len(plan_pasos) and isinstance(plan_pasos[idx], dict):
+        return plan_pasos[idx].get("args") or {}
+    return {}
+
+
+def node_fs_write(state: AetherState) -> dict:
+    """
+    Escribe uno o varios archivos con ruta+contenido explícitos.
+    'files' (lista de {path, content}) → escritura atómica best-effort de
+    varios archivos (proyectos multi-archivo). Si no viene 'files', usa
+    'path'+'content' (o 'filename'/'instruccion' como alias) para uno solo.
+    """
+    args = _args_del_paso(state)
+
+    files = args.get("files")
+    if isinstance(files, list) and files:
+        rutas, ok, err = escribir_archivos_fs(files)
+        if not ok:
+            return {
+                "error_activo":   True,
+                "error_mensaje":  err,
+                "error_contexto": "fs_write",
+            }
+        msg = "Archivos escritos:\n" + "\n".join(f"- {r}" for r in rutas)
+        return {"fs_result": msg, "final_response": msg, "messages": [AIMessage(content=msg)]}
+
+    path    = args.get("path") or args.get("filename")
+    content = args.get("content")
+    if content is None:
+        content = args.get("instruccion")
+    if not path:
+        return {
+            "error_activo":   True,
+            "error_mensaje":  "fs_write requiere 'path' (o 'files' para varios archivos).",
+            "error_contexto": "fs_write",
+        }
+
+    destino, ok, err = escribir_archivo_fs(path, content or "")
+    if not ok:
+        return {
+            "error_activo":   True,
+            "error_mensaje":  f"No se pudo escribir '{path}': {err}",
+            "error_contexto": "fs_write",
+        }
+    msg = f"Guardado en {destino}"
+    return {"fs_result": msg, "final_response": msg, "messages": [AIMessage(content=msg)]}
+
+
+def node_fs_read(state: AetherState) -> dict:
+    """Lee un archivo de texto dado su path y deja el contenido crudo en fs_result."""
+    args = _args_del_paso(state)
+    path = args.get("path") or args.get("filename")
+    if not path:
+        return {
+            "error_activo":   True,
+            "error_mensaje":  "fs_read requiere 'path'.",
+            "error_contexto": "fs_read",
+        }
+
+    contenido, ok, err = leer_archivo_fs(path)
+    if not ok:
+        return {
+            "error_activo":   True,
+            "error_mensaje":  f"No se pudo leer '{path}': {err}",
+            "error_contexto": "fs_read",
+        }
+    return {"fs_result": contenido}
+
+
+def node_fs_mkdir(state: AetherState) -> dict:
+    """Crea un directorio (y sus padres) dado su path."""
+    args = _args_del_paso(state)
+    path = args.get("path")
+    if not path:
+        return {
+            "error_activo":   True,
+            "error_mensaje":  "fs_mkdir requiere 'path'.",
+            "error_contexto": "fs_mkdir",
+        }
+
+    destino, ok, err = crear_directorio_fs(path)
+    if not ok:
+        return {
+            "error_activo":   True,
+            "error_mensaje":  f"No se pudo crear '{path}': {err}",
+            "error_contexto": "fs_mkdir",
+        }
+    msg = f"Directorio creado: {destino}"
+    return {"fs_result": msg, "final_response": msg, "messages": [AIMessage(content=msg)]}
+
+
+def node_fs_list(state: AetherState) -> dict:
+    """Lista (no recursivo) el contenido de un directorio dado su path."""
+    args = _args_del_paso(state)
+    path = args.get("path")
+    if not path:
+        return {
+            "error_activo":   True,
+            "error_mensaje":  "fs_list requiere 'path'.",
+            "error_contexto": "fs_list",
+        }
+
+    listado, ok, err = listar_directorio_fs(path)
+    if not ok:
+        return {
+            "error_activo":   True,
+            "error_mensaje":  f"No se pudo listar '{path}': {err}",
+            "error_contexto": "fs_list",
+        }
+    return {"fs_result": listado}
+
+
+# ══════════════════════════════════════════════════════════════════════
 # NODO: PLAN_EXECUTOR (ejecuta pasos del plan reutilizando nodos reales)
 # ══════════════════════════════════════════════════════════════════════
 
@@ -3612,6 +3876,10 @@ _CAMPOS_RESULTADO_POR_TOOL = {
     "codigo":       ("shell_output", "final_response", "llm_response"),
     "mcp":          ("mcp_result", "final_response", "llm_response"),
     "computer_use": ("computer_use_result", "final_response", "llm_response"),
+    "fs_write":     ("fs_result", "final_response", "llm_response"),
+    "fs_read":      ("fs_result", "final_response", "llm_response"),
+    "fs_mkdir":     ("fs_result", "final_response", "llm_response"),
+    "fs_list":      ("fs_result", "final_response", "llm_response"),
 }
 
 

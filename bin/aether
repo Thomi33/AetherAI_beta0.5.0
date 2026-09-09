@@ -8,6 +8,7 @@
 #   aether                → TUI moderna  (equivale a: cd <proyecto> && python run.py)
 #   aether tui            → idem, explícito
 #   aether task "ORDEN"   → one-shot: ejecuta UNA orden y devuelve la respuesta
+#   aether --workdir RUTA  → trabaja sobre RUTA (default: dir. actual $PWD)
 #   aether cli            → loop interactivo simple sin Textual (jarvis_new.py)
 #   aether doctor         → diagnóstico del entorno (python, venv, ollama, db)
 #   aether -V | --version → versión del runtime
@@ -26,6 +27,36 @@ while [ -L "$SOURCE" ]; do
   [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
 done
 AETHER_HOME="$(cd -P "$(dirname "$SOURCE")/.." >/dev/null 2>&1 && pwd)"
+
+# ── 1b) Capturar el directorio de invocación ANTES del cd ─────────────────
+# RUTA_TRABAJO (settings.py) lee $AETHER_CWD: así el agente trabaja en
+# ~/Documents, ~/Proyecto, etc. según desde dónde lo llames.
+AETHER_CWD="$PWD"
+EXTRA_ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --workdir)
+      AETHER_CWD="$2" || true; EXTRA_ARGS+=("$1" "$2"); shift 2 ;;
+    --workdir=*)
+      AETHER_CWD="${1#--workdir=}"; EXTRA_ARGS+=("$1"); shift ;;
+    tui|task|cli|doctor|version|--doctor)
+      EXTRA_ARGS+=("$1"); shift ;;
+    -t|--task)
+      EXTRA_ARGS+=("task"); shift ;;
+    -i|--interactive)
+      EXTRA_ARGS+=("cli"); shift ;;
+    -V|--version)
+      EXTRA_ARGS+=("version"); shift ;;
+    *) EXTRA_ARGS+=("$1"); shift ;;
+  esac
+done
+if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
+  set -- "${EXTRA_ARGS[@]}"
+else
+  set --
+fi
+export AETHER_CWD
+[[ -n "${AETHER_WORKDIR_SHOW:-}" ]] && echo "Dir. trabajo: $AETHER_CWD"
 
 # ── 2) Elegir el intérprete (venvs probados en orden de prioridad) ────────
 PY=""
@@ -50,7 +81,28 @@ if [[ -z "$PY" ]]; then
 fi
 
 # ── 3) Ejecutar (el cwd pasa a ser el proyecto: misma base que antes) ─────
+# NOTA workdir: el `cd` es intencional (imports/venv estables). El dir. de
+# invocación viaja en $AETHER_CWD → settings.RUTA_TRABAJO; shell y file
+# tools ya operan ahí. `aether --workdir R` lo pisa (ver 1b arriba).
 cd "$AETHER_HOME"
+# --workdir puede venir en cualquier posición (argparse de Python lo maneja);
+# como bin/aether YA fijó AETHER_CWD arriba, solo hay que sacarlo de $@ si
+# quedó pegado al subcomando task, y pasarlo como flag de aether_run.py.
+# Casos: `aether --workdir R task "..."` / `aether task --workdir R "..."`.
+WORKDIR_FLAG=()
+ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --workdir) WORKDIR_FLAG=(--workdir "$2"); shift 2 ;;
+    --workdir=*) WORKDIR_FLAG=("$1"); shift ;;
+    *) ARGS+=("$1"); shift ;;
+  esac
+done
+if [[ ${#ARGS[@]} -gt 0 ]]; then
+  set -- "${ARGS[@]}"
+else
+  set --
+fi
 case "${1:-}" in
   -h|--help)
     sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
@@ -60,15 +112,15 @@ case "${1:-}" in
     ;;
   -t|--task|task)
     shift
-    exec "$PY" bin/aether_run.py task "$@"
+    exec "$PY" bin/aether_run.py task "${WORKDIR_FLAG[@]}" "$@"
     ;;
   cli|-i|--interactive)
-    exec "$PY" jarvis_new.py
+    exec "$PY" jarvis_new.py "${WORKDIR_FLAG[@]}" "$@"
     ;;
   doctor|--doctor)
     exec "$PY" bin/aether_run.py doctor
     ;;
   *)
-    exec "$PY" run.py
+    exec "$PY" run.py "${WORKDIR_FLAG[@]}" "$@"
     ;;
 esac

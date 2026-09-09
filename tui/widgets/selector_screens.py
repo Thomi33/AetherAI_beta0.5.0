@@ -672,3 +672,71 @@ class CommandPaletteScreen(Screen):
         if self._on_select:
             self._on_select(cmd)
         self.dismiss(cmd)
+
+
+# ───────────────────────────────── PASTE PREVIEW ─────────────────────────────────
+
+class PastePreviewScreen(Screen):
+    """
+    Muestra el contenido completo de un pegado colapsado por PasteInput
+    (ver widgets/paste_input.py). Solo lectura — no es un editor, es una
+    forma de ver "qué hay adentro" del placeholder "[pasted N characters]"
+    antes de mandar el mensaje.
+    """
+
+    DEFAULT_CSS = """
+    PastePreviewScreen {
+        align: center middle;
+        background: rgba(0,0,0,0.6);
+    }
+
+    #paste-box {
+        width: 90%;
+        height: 80%;
+        background: $surface;
+        border: solid $primary;
+        padding: 0 1;
+    }
+
+    #paste-title {
+        text-style: bold;
+        color: $text;
+        border-bottom: solid $primary-darken-2;
+        height: 1;
+        margin-bottom: 1;
+    }
+
+    #paste-textarea {
+        height: 1fr;
+        border: solid $primary-darken-2;
+    }
+
+    #paste-footer {
+        height: 1;
+        margin-top: 1;
+        border-top: solid $primary-darken-2;
+        color: $text-muted;
+        padding: 0;
+    }
+    """
+
+    BINDINGS = [
+        Binding("escape", "dismiss_none", "Cerrar", show=False),
+        Binding("enter", "dismiss_none", "Cerrar", show=False),
+    ]
+
+    def __init__(self, texto: str):
+        super().__init__()
+        self._texto = texto
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="paste-box"):
+            yield Static(f"Pegado completo — {len(self._texto)} caracteres", id="paste-title")
+            yield TextArea(self._texto, id="paste-textarea", read_only=True, show_line_numbers=True)
+            yield Static("esc / enter cerrar", id="paste-footer")
+
+    def on_mount(self) -> None:
+        self.query_one("#paste-textarea", TextArea).focus()
+
+    def action_dismiss_none(self) -> None:
+        self.dismiss(None)

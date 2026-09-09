@@ -65,7 +65,7 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
     "codigo": {
         "node": "node_codigo",
         "instruccion_requerida": True,
-        "descripcion": "Generar código y ejecutarlo (python/bash).",
+        "descripcion": "Generar código (python/bash/java), guardarlo en un archivo si el usuario da un nombre/ruta (ej. main.py, script.sh), y ejecutarlo.",
     },
     "memory": {
         "node": "node_memory",
@@ -103,6 +103,36 @@ TOOL_REGISTRY: dict[str, dict[str, Any]] = {
             "mouse/teclado con el modelo de visión, la ejecuta, repite hasta "
             "cumplir el objetivo o alcanzar el límite de pasos."
         ),
+    },
+    # ── FileSystemTool (auditoría 2026-09-06, punto 3) ──────────────────
+    # Operaciones explícitas de archivo/directorio con path+content
+    # estructurados, para el agent loop. Ver core/tools/filesystem_tool.py
+    # para el motivo (node_codigo solo guarda el primer bloque de código;
+    # file_write legacy adivina la ruta por regex sobre texto libre).
+    "fs_write": {
+        "node": "node_fs_write",
+        "instruccion_requerida": False,
+        "descripcion": (
+            "Escribir uno o varios archivos con ruta y contenido explícitos. "
+            "Usar 'files' (lista de {path, content}) para proyectos de varios "
+            "archivos: se escriben todos o ninguno (si uno falla, se revierten "
+            "los ya escritos). Para un solo archivo alcanza con 'path'+'content'."
+        ),
+    },
+    "fs_read": {
+        "node": "node_fs_read",
+        "instruccion_requerida": False,
+        "descripcion": "Leer el contenido de un archivo de texto existente dado su path.",
+    },
+    "fs_mkdir": {
+        "node": "node_fs_mkdir",
+        "instruccion_requerida": False,
+        "descripcion": "Crear un directorio (y sus padres si hacen falta) en el path dado.",
+    },
+    "fs_list": {
+        "node": "node_fs_list",
+        "instruccion_requerida": False,
+        "descripcion": "Listar el contenido (archivos y subdirectorios) de un directorio dado su path.",
     },
 }
 
@@ -198,6 +228,46 @@ TOOL_PARAMETROS: dict[str, dict] = {
             "instruccion": {"type": "string", "description": "Objetivo a lograr controlando mouse/teclado en pantalla."},
         },
         "required": ["instruccion"],
+    },
+    "fs_write": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Ruta del archivo a escribir (para un solo archivo)."},
+            "content": {"type": "string", "description": "Contenido a escribir en 'path' (para un solo archivo)."},
+            "files": {
+                "type": "array",
+                "description": "Lista de {path, content} para escribir varios archivos de forma atómica (proyectos multi-archivo). Si se usa 'files', no hace falta 'path'/'content' sueltos.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "content": {"type": "string"},
+                    },
+                },
+            },
+        },
+        "required": [],
+    },
+    "fs_read": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Ruta del archivo a leer."},
+        },
+        "required": ["path"],
+    },
+    "fs_mkdir": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Ruta del directorio a crear."},
+        },
+        "required": ["path"],
+    },
+    "fs_list": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Ruta del directorio a listar."},
+        },
+        "required": ["path"],
     },
 }
 

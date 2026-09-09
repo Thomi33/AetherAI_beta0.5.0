@@ -12,6 +12,7 @@ from tui.widgets.chat_panel import ChatPanel
 from tui.widgets.plan_panel import PlanPanel
 from tui.widgets.status_bar import StatusBar
 from tui.widgets.debug_panel import DebugPanel
+from tui.widgets.paste_input import PasteInput
 
 from tui.widgets.slash_completer import SlashCompleter
 from tui.widgets.selector_screens import (
@@ -38,6 +39,7 @@ from tui.engine_bridge import (
 SLASH_HELP = (
     "Comandos disponibles:\n"
     "  F2                     — dictar por voz (push-to-talk, whisper local)\n"
+    "  Ctrl+R                 — ver contenido completo de un pegado colapsado\n"
     "  /help                  — esta ayuda\n"
     "  /debug                 — muestra/oculta el panel de debug\n"
     "  /get [clave]           — ver config actual (todas, o una clave puntual)\n"
@@ -73,13 +75,14 @@ class AetherApp(App):
     #plan_panel { height: 6; background: $surface-darken-1; color: $text; padding: 0 1; }
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, workdir: str | None = None, **kwargs):
         super().__init__(**kwargs)
         self._thinking = False
         self._respuesta_en_curso = ""
         self._ultimas_sesiones: list[dict] = []  # cache para '/historial <n>' tras '/sesiones'
         self._current_agent = "build"
         self._current_effort = "medium"
+        self._workdir = workdir  # --workdir (lo aplica on_mount vía settings)
         self._grabador = None  # GrabadorAudio, lazy (ver core/services/stt_service.py)
 
     def compose(self) -> ComposeResult:
@@ -90,11 +93,18 @@ class AetherApp(App):
         yield DebugPanel(id="debug_panel")
         yield StatusBar(id="status_bar")
         yield SlashCompleter(id="slash_completer")
-        yield Input(placeholder="Escribí tu mensaje aquí...", id="input_chat")
+        yield PasteInput(placeholder="Escribí tu mensaje aquí...", id="input_chat")
         yield Button("Enviar", id="btn_enviar")
         yield Footer()
 
     def on_mount(self) -> None:
+        # --workdir (TUI): fija AETHER_CWD antes de que el motor lea settings.
+        # bin/aether ya exporta AETHER_CWD con el $PWD de invocación; acá solo
+        # pisa si el usuario pasó --workdir explícito al comando `aether`.
+        if getattr(self, "_workdir", None):
+            import os
+            os.environ["AETHER_CWD"] = self._workdir
+        self._mostrar_banner_dir()
         self._inicializar_motor_bg()
 
     @work(thread=True)
@@ -162,13 +172,17 @@ class AetherApp(App):
         if self._thinking:
             return
 
-        input_widget = self.query_one("#input_chat", Input)
+        input_widget = self.query_one("#input_chat", PasteInput)
         texto = input_widget.value.strip()
         if not texto:
             return
+        # Resolver placeholders "[pasted N characters]" al texto real antes
+        # de procesar el mensaje (ver PasteInput en widgets/paste_input.py).
+        texto = input_widget.resolver_texto(texto)
         # Si el completer está visible al enviar, cerrarlo
         self.query_one("#slash_completer", SlashCompleter).hide()
         input_widget.value = ""
+        input_widget.limpiar_pegados()
 
         if texto.startswith("/"):
             self._manejar_comando_slash(texto)
@@ -688,6 +702,28 @@ class AetherApp(App):
             streaming_line.update("")
             self._finalizar_turno()
 
+    def _mostrar_banner_dir(self) -> None:
+        """Banner de sesión: dónde trabaja + estado de autorización."""
+        try:
+            from core.config.dir_authorization import (
+                esta_autorizado, resolver_dir_trabajo)
+            ruta = resolver_dir_trabajo()
+            estado = "autorizado" if esta_autorizado(ruta) else "dir. nuevo (registrado)"
+            try:
+                chat = self.query_one("#chat_panel", ChatPanel)
+                chat.agregar_mensaje(
+                    f"Trabajando en: {ruta}  ({estado})\n"
+                    f"   Cambia con: aether --workdir <ruta>  |  dirs: ~/.aether/allowed_dirs.json",
+                    "assistant")
+            except Exception:
+                pass
+            try:
+                self.title = f"Aether - {ruta.name} [{ruta}]"
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     def _finalizar_turno(self) -> None:
         self._thinking = False
         self._respuesta_en_curso = ""
@@ -696,6 +732,7 @@ class AetherApp(App):
         input_widget.focus()
 
 
-def run() -> None:
-    app = AetherApp()
+
+def run(workdir: str | None = None) -> None:
+    app = AetherApp(workdir=workdir)
     app.run()

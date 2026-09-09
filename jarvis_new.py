@@ -1,7 +1,18 @@
 """
 Aether — Punto de entrada alternativo (loop propio sobre el grafo).
+Acepta --workdir RUTA (lo pasa bin/aether); si no, usa $AETHER_CWD o cwd.
 """
+import os
+import sys
 import traceback
+
+for _i, _a in enumerate(sys.argv):
+    if _a == "--workdir" and _i + 1 < len(sys.argv):
+        os.environ["AETHER_CWD"] = sys.argv[_i + 1]
+        break
+    if _a.startswith("--workdir="):
+        os.environ["AETHER_CWD"] = _a.split("=", 1)[1]
+        break
 
 from core.config.settings import MODO_AUTONOMO, MODELO
 from core.memory.memory_manager import (
@@ -30,6 +41,9 @@ def procesar_orden_completo(orden: str, mem: dict, modo_autonomo: bool = True) -
 
 
 def main():
+    from core.config.dir_authorization import resolver_dir_trabajo
+    ruta = resolver_dir_trabajo()
+    print(f"\n📁 Dir. trabajo: {ruta}")
     mem = cargar_memoria()
     core         = mem.get("core", {})
     conversacion = mem.get("conversacion", [])

@@ -7,8 +7,12 @@ funciona directo. Resuelve las rutas del proyecto de forma relativa a su
 propia ubicación, por lo que corre desde CUALQUIER directorio:
 
     python bin/aether_run.py version
-    python bin/aether_run.py task "abre Firefox"
+    python bin/aether_run.py task "abre Firefox"            # usa el $PWD como dir. de trabajo
+    python bin/aether_run.py task --workdir ~/Proyecto "..."  # opera en otra carpeta
     python bin/aether_run.py doctor
+
+Desde el lanzador global, el directorio de trabajo se captura automáticamente
+($PWD de invocación → $AETHER_CWD → settings.RUTA_TRABAJO); `--workdir` lo pisa.
 
 Comandos:
     version   imprime versión del runtime + revisión git
@@ -52,12 +56,21 @@ def cmd_version() -> int:
 # ─────────────────────────────────────────────────────────────────────────
 # task (one-shot sobre el grafo)
 # ─────────────────────────────────────────────────────────────────────────
-def cmd_task(mensaje: str) -> int:
+def cmd_task(mensaje: str, workdir: str | None = None) -> int:
     if not mensaje:
         print('❌ `aether task` necesita una orden. Ej: aether task "abre Firefox"',
               file=sys.stderr)
         return 2
 
+    # Fijar dir. de trabajo ANTES de importar el grafo (settings es lazy
+    # pero dir_authorization pide confirmación acá en TTY).
+    import os as _os
+    if workdir:
+        _os.environ["AETHER_CWD"] = workdir
+    from core.config.dir_authorization import resolver_dir_trabajo
+    from core.config import settings as _s
+    ruta = resolver_dir_trabajo(workdir_cli=workdir)
+    print(f"📁 Dir. trabajo: {ruta}")
     print(f"🧠 Creador: {mensaje}")
     try:
         from core.memory.memory_manager import cargar_memoria
@@ -115,9 +128,18 @@ def cmd_doctor() -> int:
         ok = _marca(False, "config.json existe", str(config_path)) and ok
 
     try:
-        from core.config import settings  # noqa: F401
-        base = Path(settings.BASE_AETHER).expanduser()
+        from core.config import settings as _s
+        base = Path(_s.BASE_AETHER).expanduser()
         ok = _marca(base.exists(), "BASE_AETHER existe", str(base)) and ok
+        try:
+            from core.config.dir_authorization import listar_dirs, esta_autorizado
+            from core.config import settings as _st
+            _rt = _st.RUTA_TRABAJO
+            ok = _marca(_rt.is_dir(), "dir. trabajo actual", f"{_rt} ({'autorizado' if esta_autorizado(_rt) else 'nuevo'})") and ok
+            _dirs = listar_dirs()
+            ok = _marca(True, "dirs autorizados", f"{len(_dirs)}: {', '.join(_dirs[:4])}{'...' if len(_dirs) > 4 else ''}" if _dirs else "ninguno aún") and ok
+        except Exception as exc2:
+            ok = _marca(False, "dirs autorizados", str(exc2)) and ok
     except Exception as exc:
         ok = _marca(False, "core.config importable", str(exc)) and ok
 
@@ -168,7 +190,8 @@ def main(argv: list[str] | None = None) -> int:
 
     p_task = sub.add_parser("task", help="ejecuta una orden one-shot sobre el grafo")
     p_task.add_argument("orden", nargs="+", help="la orden a ejecutar (ej: abre Firefox)")
-    p_task.set_defaults(func=lambda a: cmd_task(" ".join(a.orden)))
+    p_task.add_argument("--workdir", default=None, help="dir. de trabajo (default: desde donde se invoca)")
+    p_task.set_defaults(func=lambda a: cmd_task(" ".join(a.orden), workdir=a.workdir))
 
     p_doctor = sub.add_parser("doctor", help="diagnóstico del entorno")
     p_doctor.set_defaults(func=lambda _: cmd_doctor())

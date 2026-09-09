@@ -5,6 +5,7 @@ El camino recomendado es el lanzador global:
 
     aether                 # TUI moderna (equivale a: cd <proyecto> && python run.py)
     aether task "ORDEN"    # one-shot sobre el grafo
+    aether --workdir RUTA  # operar sobre otra carpeta (default: el $PWD actual)
     aether doctor          # diagnóstico
     aether --help
 
