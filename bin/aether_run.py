@@ -67,11 +67,17 @@ def cmd_task(mensaje: str, workdir: str | None = None) -> int:
     import os as _os
     if workdir:
         _os.environ["AETHER_CWD"] = workdir
-    from core.config.dir_authorization import resolver_dir_trabajo, fue_evaluada, presentacion_y_confirmacion
+    from core.config.dir_authorization import (
+        esta_autorizado,
+        resolver_dir_trabajo,
+        presentacion_y_confirmacion,
+    )
     from core.config import settings as _s
     ruta = resolver_dir_trabajo(workdir_cli=workdir)
-    if not fue_evaluada(ruta):
-        presentacion_y_confirmacion(ruta)
+    if not esta_autorizado(ruta):
+        if not presentacion_y_confirmacion(ruta):
+            print("Aether se cierra porque el directorio no fue autorizado.", file=sys.stderr)
+            return 1
     print(f"📁 Dir. trabajo: {ruta}")
     print(f"🧠 Creador: {mensaje}")
     try:

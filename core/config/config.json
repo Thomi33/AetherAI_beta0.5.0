@@ -1,6 +1,6 @@
 {
   "MODELO": "ornith-1.5:9b",
-  "MODELO_VISION": "minicpm-v4.6:latest",
+  "MODELO_VISION": "ornith-1.5:9b",
   "OLLAMA_HOST": "http://localhost:11434",
   "SEARXNG_URL": "http://localhost:8081",
   "MODO_AUTONOMO": true,
@@ -18,6 +18,10 @@
   },
   "OLLAMA_NUM_PARALLEL": 4,
   "OLLAMA_MAX_LOADED_MODELS": 2,
+  "MAX_AGENT_STEPS": 6,
+  "MAX_STEPS_COMPUTER_USE": 8,
+  "MAX_HISTORIAL": 100000,
+  "CONTEXTO_CONV_MAX_CHARS": 16000,
   "BASE_AETHER": "~/Aether",
   "CARPETA_AETHER": "~/Aether",
   "TEMPERATURE": 0.15,

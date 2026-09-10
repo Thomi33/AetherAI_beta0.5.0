@@ -35,6 +35,9 @@ def _db():
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
     try:
+        con.execute("PRAGMA busy_timeout = 5000")
+        con.execute("PRAGMA journal_mode = WAL")
+        con.execute("PRAGMA synchronous = NORMAL")
         yield con
         con.commit()
     except Exception:
@@ -94,6 +97,14 @@ def asegurar_esquema() -> None:
                     ultimo_turno_id  INTEGER DEFAULT 0,
                     actualizado      TEXT
                 );
+                CREATE INDEX IF NOT EXISTS idx_conversaciones_tema_sesion_id
+                    ON conversaciones (tema, sesion_id, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_conversaciones_sesion_id
+                    ON conversaciones (sesion_id, id);
+                CREATE INDEX IF NOT EXISTS idx_recuerdos_categoria_importancia
+                    ON recuerdos (categoria, importancia, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_comandos_sesion_id
+                    ON comandos (sesion_id, id);
             """)
         print("[MEMORIA] Esquema verificado/creado en", DB_PATH)
     except Exception as e:

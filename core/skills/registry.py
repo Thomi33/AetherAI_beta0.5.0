@@ -6,8 +6,8 @@ reutilizables (buenas prácticas, checklists, errores comunes) para un tipo
 de tarea recurrente. NO son tools -- no ejecutan nada por sí solas -- son
 CONOCIMIENTO que el modelo puede cargar bajo demanda (vía la tool `fs_read`,
 ya existente) antes de encarar una tarea, en vez de reinventar el enfoque
-de memoria cada vez. Ver skills/README.md para el formato completo y cómo
-agregar una nueva (a mano, o pidiéndoselo al propio Aether -- `fs_write` ya
+de memoria cada vez. Ver la sección de skills del README raíz para el formato
+completo y cómo agregar una nueva (a mano, o pidiéndoselo al propio Aether -- `fs_write` ya
 puede escribir ahí, no hace falta ninguna tool nueva para eso).
 
 Formato de SKILL.md (frontmatter mínimo, NO YAML real -- solo

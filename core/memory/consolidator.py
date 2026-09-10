@@ -25,16 +25,19 @@ dump creciente de mensajes.
 from __future__ import annotations
 
 import threading
+from datetime import datetime
 
 from core.memory.memory_manager import (
     obtener_resumen,
     guardar_resumen,
     obtener_turnos_pendientes_de_resumen,
 )
+from core.config.settings import RUTA_NOTAS
 
 # Umbral por defecto: no vale la pena gastar una llamada al LLM por cada
 # turno nuevo. Se consolida cuando hay un lote razonable acumulado.
 MIN_TURNOS_PARA_CONSOLIDAR = 12
+COMPACTACION_MIN_CHARS = 12000
 
 # El consolidado puede tardar bastante más que un turno normal porque llama al
 # LLM. Un único worker por proceso evita que dos respuestas simultáneas lean el
@@ -125,13 +128,38 @@ Reescribí el resumen completo actualizado (solo el resumen, sin explicaciones n
 
     ultimo_id = pendientes[-1]["id"]
     guardar_resumen(nuevo_resumen, ultimo_turno_id=ultimo_id)
+    _guardar_nota_durable(nuevo_resumen, ultimo_id)
     print(f"[MEMORIA] Resumen consolidado: {len(pendientes)} turnos integrados.")
     return nuevo_resumen
+
+
+def _guardar_nota_durable(resumen: str, ultimo_turno_id: int) -> None:
+    """Conserva una copia legible del contexto importante antes de compactarlo."""
+    try:
+        notas = RUTA_NOTAS
+        notas.mkdir(parents=True, exist_ok=True)
+        (notas / "contexto_importante.md").write_text(
+            "# Contexto importante de Aether\n\n"
+            f"_Actualizado: {datetime.now().astimezone().isoformat()} · "
+            f"último turno: {ultimo_turno_id}_\n\n{resumen.strip()}\n",
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        print(f"[MEMORIA] No se pudo guardar la nota durable: {exc}")
 
 
 def turnos_pendientes_count() -> int:
     """Cantidad de turnos crudos todavía no integrados al resumen. Para UI/debug."""
     return len(obtener_turnos_pendientes_de_resumen())
+
+
+def compactar_contexto_si_necesario() -> bool:
+    """Compacta turnos pendientes cuando el contexto crudo ya es demasiado grande."""
+    pendientes = obtener_turnos_pendientes_de_resumen()
+    chars = sum(len(str(t.get("texto", ""))) for t in pendientes)
+    if len(pendientes) < MIN_TURNOS_PARA_CONSOLIDAR and chars < COMPACTACION_MIN_CHARS:
+        return False
+    return consolidar_resumen(forzar=True, min_turnos=1) is not None
 
 
 def programar_consolidacion(mem: dict | None = None) -> bool:

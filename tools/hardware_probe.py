@@ -97,6 +97,7 @@ def resto():
         if usable >= c[1]:
             tier = c
     t, _, modelo, vision, ctx, pred, plan, chat, maxt, batch, keep, par, mm, nota = tier
+    ctx_efectivo = min(ctx * 2, 65536)
     threads = max(1, min(hilos - 1 if hilos and hilos > 2 else (hilos or 4), 8))
     if weak_cpu:
         threads = min(threads, 3)
@@ -107,7 +108,8 @@ def resto():
         "disco_libre_gb": round(free, 1), "usable_gb": usable,
         "weak_cpu": weak_cpu, "tier": t, "nota": nota,
         "recomendado": {
-            "MODELO": modelo, "MODELO_VISION": vision, "NUM_CTX": ctx,
+            "MODELO": modelo, "MODELO_VISION": modelo,
+            "NUM_CTX_BASE": ctx, "NUM_CTX": ctx_efectivo,
             "NUM_PREDICT": pred, "NUM_PREDICT_PLANNER": plan,
             "MAX_TURNOS_CONTEXTO_CHAT": chat, "TIMEOUT_CMD": maxt,
             "OLLAMA_KEEP_ALIVE": keep, "OLLAMA_NUM_PARALLEL": par,
@@ -125,8 +127,9 @@ def por_tier(nombre, base):
             gen["num_batch"] = batch
             # threads/num_gpu detectados se conservan (ya contemplan CPU/GPU real)
             return {"tier": t, "nota": nota,
-                    "recomendado": {"MODELO": modelo, "MODELO_VISION": vision,
-                                    "NUM_CTX": ctx, "NUM_PREDICT": pred,
+                    "recomendado": {"MODELO": modelo, "MODELO_VISION": modelo,
+                                    "NUM_CTX_BASE": ctx, "NUM_CTX": min(ctx * 2, 65536),
+                                    "NUM_PREDICT": pred,
                                     "NUM_PREDICT_PLANNER": plan,
                                     "MAX_TURNOS_CONTEXTO_CHAT": chat,
                                     "TIMEOUT_CMD": maxt, "OLLAMA_KEEP_ALIVE": keep,

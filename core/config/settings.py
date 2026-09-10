@@ -9,10 +9,20 @@ from pathlib import Path
 # =====================================================================
 # ⚙️ CONFIGURACIÓN BASE
 # =====================================================================
-MODO_AUTONOMO   = True
-OLLAMA_HOST     = "http://localhost:11434"
-SEARXNG_URL     = "http://localhost:8081"
-MODELO          = "ornith:9b" # ← Ornith-1.0-9B (DeepReinforce)
+from core.config.config_manager import get_config_manager
+
+_CONFIG = get_config_manager()
+
+
+def _config_value(nombre: str, default):
+    """Lee valores configurables desde config.json mediante ConfigManager."""
+    return _CONFIG.get(nombre, default)
+
+
+MODO_AUTONOMO = _config_value("MODO_AUTONOMO", True)
+OLLAMA_HOST = _config_value("OLLAMA_HOST", "http://localhost:11434")
+SEARXNG_URL = _config_value("SEARXNG_URL", "http://localhost:8081")
+MODELO = _config_value("MODELO", "ornith:9b")
 
 # === Minimal optional instrumentation for AetherBench ===
 # Set AETHER_BENCH_INSTRUMENT=1 before importing to enable metrics logging
@@ -22,27 +32,34 @@ MODELO          = "ornith:9b" # ← Ornith-1.0-9B (DeepReinforce)
 BENCH_INSTRUMENT = os.environ.get("AETHER_BENCH_INSTRUMENT", "0") == "1"
 BENCH_LOG_PATH = Path.home() / ".aether" / "bench_metrics.jsonl"
 BENCH_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-TIMEOUT_CMD     = 60
-# Carpeta base de datos del agente (DB, logs, screenshots…).
-# Home de Aether: ~/Aether (es decir /home/thomi/Aether). Crear data aquí.
-# Cambiar SOLO esta ruta reubica toda la data del agente.
-BASE_AETHER     = Path.home() / "Aether"
+TIMEOUT_CMD = _config_value("TIMEOUT_CMD", 60)
+# Carpeta base de datos del agente (DB, notas, logs, screenshots…).
+# El instalador puede definir AETHER_DATA_DIR en .env para usar una carpeta
+# separada o el directorio del proyecto.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
-# ─────────────────────────────────────────────────────────────────────
-# 👁️  MODELO DE VISIÓN
-# Debe ser un modelo multimodal instalado en Ollama.
-# qwen3.5:9b es texto puro y NO soporta imágenes.
-#
-# Opciones comunes (instalar con: ollama pull <nombre>):
-#   "llava:7b"        ← más común, buena calidad
-#   "llava-phi3"      ← más rápido, menos RAM
-#   "moondream"       ← muy ligero (~1.7GB)
-#   "minicpm-v"       ← buena relación calidad/peso
-#   "qwen2.5vl:7b"   ← si querés mantenerte en la familia Qwen
-#
-# Verificá los que tenés con: ollama list
-# ─────────────────────────────────────────────────────────────────────
-MODELO_VISION   =  "minicpm-v4.6:latest"  # ← CAMBIÁ según lo que tengas instalado
+
+def _env_local(nombre: str) -> str:
+    valor = os.environ.get(nombre)
+    if valor:
+        return valor
+    env_path = PROJECT_ROOT / ".env"
+    try:
+        for linea in env_path.read_text(encoding="utf-8").splitlines():
+            linea = linea.strip()
+            if linea.startswith(f"{nombre}="):
+                return linea.split("=", 1)[1].strip().strip("\"'")
+    except OSError:
+        pass
+    return ""
+
+
+BASE_AETHER = Path(
+    _env_local("AETHER_DATA_DIR")
+    or _config_value("BASE_AETHER", "~/Aether")
+).expanduser().resolve()
+
+MODELO_VISION = _config_value("MODELO_VISION", MODELO)
 
 # ───────────────────────────────────────────────────────
 # 🖱️  COMPUTER USE (loop percepción-acción: click/escribir vía ydotool)
@@ -52,36 +69,16 @@ MODELO_VISION   =  "minicpm-v4.6:latest"  # ← CAMBIÁ según lo que tengas ins
 # loop dando vueltas indefinidamente gastando inferencia y arriesgando
 # clicks en lugares no deseados. 8 es conservador; subílo si ves que
 # tareas legítimas se cortan antes de tiempo.
-MAX_STEPS_COMPUTER_USE = 8
+MAX_STEPS_COMPUTER_USE = _config_value("MAX_STEPS_COMPUTER_USE", 8)
 
-"""
-PARCHE para core/config/settings.py
-
-Agregar estas líneas DEBAJO de la sección "⚙️ CONFIGURACIÓN BASE"
-(después de la línea MODELO_VISION = "minicpm-v:8b").
-"""
-
-# ─────────────────────────────────────────────────────────────────────
-# 🔧 ORQUESTACIÓN: LangGraph (reemplaza CrewAI)
-# ─────────────────────────────────────────────────────────────────────
-# CONFIRMADO: qwen3.5:9b soporta tool calling nativo en Ollama
-# (devuelve tool_calls estructurados — ver test del 22/06/2026).
-# También es un modelo "thinking": separa razonamiento (`thinking`)
-# de la respuesta final y de los tool_calls. El grafo usa ChatOllama
-# (no la capa de compatibilidad OpenAI) para manejar esto correctamente.
-#
-# TOOL_CALLING_NATIVO = True  → el modelo decide function-calling
-#                               de forma estructurada (JSON), sin
-#                               parsear texto "Action:".
-# TOOL_CALLING_NATIVO = False → modo legacy (_web_directo() de antes),
-#                               por si necesitás revertir rápido.
-TOOL_CALLING_NATIVO = True
+TOOL_CALLING_NATIVO = _config_value("TOOL_CALLING_NATIVO", True)
 
 RUTA_DB          = BASE_AETHER / "db"          / "memoria.db"
 RUTA_LOGS        = BASE_AETHER / "logs"
 RUTA_SCREENSHOTS = BASE_AETHER / "screenshots"
 RUTA_EMBEDDINGS  = BASE_AETHER / "embeddings"
 RUTA_BACKUPS     = BASE_AETHER / "backups"
+RUTA_NOTAS       = BASE_AETHER / "notes"
 
 # ─────────────────────────────────────────────────────────────────────
 # 🧠 SUBSISTEMA DE MEMORIA CONTROLADO (core/memory/store)
@@ -97,6 +94,7 @@ SNAPSHOTS_DIR = MEMORIA_DIR / "snapshots"       # ← copias inmutables (rollbac
 BACKUPS_DIR   = MEMORIA_DIR / "backups"         # ← respaldos pre-rollback
 
 BASE_AETHER.mkdir(parents=True, exist_ok=True)
+RUTA_NOTAS.mkdir(parents=True, exist_ok=True)
 
 # ─────────────────────────────────────────────────────────────────────
 # 🧩 SKILLS (core/skills/registry.py)
@@ -104,7 +102,6 @@ BASE_AETHER.mkdir(parents=True, exist_ok=True)
 # A diferencia de BASE_AETHER (datos de runtime, fuera del repo: ~/Aether),
 # las skills son comportamiento del agente -- viven DENTRO del proyecto para
 # versionarse junto al código.
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 RUTA_SKILLS  = PROJECT_ROOT / "skills"
 
 # ─────────────────────────────────────────────────────────────────────
@@ -133,7 +130,7 @@ def __getattr__(name: str):
         return _resolver_ruta_trabajo()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
-MAX_HISTORIAL = 100000
+MAX_HISTORIAL = _config_value("MAX_HISTORIAL", 100000)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -144,17 +141,17 @@ MAX_HISTORIAL = 100000
 # Usamos valor conservador para no agotar VRAM/RAM en inyección de memoria;
 # el template y el modelo manejan bien ventanas grandes si el hardware lo permite.
 # Subir (ej 32768 o más) mejora continuidad de historial.
-NUM_CTX = 8192
+NUM_CTX = _config_value("NUM_CTX", 8192)
 
 # Máximo de turnos de conversación a inyectar (RAM → prompt). Subido de 50
 # a 200. Se acota además por presupuesto de caracteres (abajo) para que un
 # pico de turnos largos nunca desborde NUM_CTX.
-MAX_TURNOS_CONTEXTO = 200
+MAX_TURNOS_CONTEXTO = _config_value("MAX_TURNOS_CONTEXTO", 200)
 
 # Presupuesto de caracteres del bloque de conversación. Se incluyen los
 # turnos MÁS RECIENTES hacia atrás hasta llegar a este tope (los más viejos
 # se descartan). ~4 chars/token → 16000 ≈ 4000 tokens, holgado en NUM_CTX.
-CONTEXTO_CONV_MAX_CHARS = 16000
+CONTEXTO_CONV_MAX_CHARS = _config_value("CONTEXTO_CONV_MAX_CHARS", 16000)
 
 # Turnos de conversación a inyectar DURANTE pasos de un plan multi-tool.
 # El chat normal (planes de 1 paso) usa el historial completo (arriba), pero
@@ -162,7 +159,7 @@ CONTEXTO_CONV_MAX_CHARS = 16000
 # "se acuerda" de tareas viejas y hace algo distinto). Por eso aquí se recorta
 # fuerte: 0 = sin historial conversacional (cada paso se ejecuta con su propia
 # instrucción + el contexto de pasos previos, que es lo único relevante).
-MAX_TURNOS_CONTEXTO_PLAN = 0
+MAX_TURNOS_CONTEXTO_PLAN = _config_value("MAX_TURNOS_CONTEXTO_PLAN", 0)
 
 # Turnos de conversación a inyectar en el camino de CHARLA (tool=text /
 # modo_chat). El chat necesita continuidad, pero NO los 200 turnos completos:
@@ -170,7 +167,7 @@ MAX_TURNOS_CONTEXTO_PLAN = 0
 # que derivaba en un diagnóstico de hardware de una sesión anterior). Una
 # ventana chica da contexto reciente sin arrastrar tareas viejas (anti-
 # contaminación del chat). 0 = sin historial (no recomendado para chat).
-MAX_TURNOS_CONTEXTO_CHAT = 10
+MAX_TURNOS_CONTEXTO_CHAT = _config_value("MAX_TURNOS_CONTEXTO_CHAT", 10)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -181,7 +178,7 @@ MAX_TURNOS_CONTEXTO_CHAT = 10
 # entre cada llamada (intent gate, node_text, synthesizer, resúmenes de tools).
 # Valores: "30m", "1h" o "-1" (cargado para siempre). Con recursos de sobra,
 # conviene mantenerlo caliente. Lo consume _llm_chat vía ollama.chat(keep_alive=).
-OLLAMA_KEEP_ALIVE = -1   # integer recomendado; evita problemas de parsing de unidades en algunas versiones de Ollama
+OLLAMA_KEEP_ALIVE = _config_value("OLLAMA_KEEP_ALIVE", -1)
 
 # Opciones de generación que se mergean en CADA llamada a _llm_chat (además de
 # num_ctx). 
@@ -191,22 +188,7 @@ OLLAMA_KEEP_ALIVE = -1   # integer recomendado; evita problemas de parsing de un
 #   Para benchmarks reproducibles: temperature=1.0, top_p=1.0 o 0.95
 # Ajustes para throughput:
 #   num_batch, num_gpu, num_thread como antes.
-OLLAMA_GEN_OPTIONS = {
-    "num_batch": 512,
-    "num_gpu": 8,         # ← Ornith-35B parece tener muy pocas capas (~24) pero
-                          #   MUY anchas: ~820MB/capa. num_gpu=24 ya casi
-                          #   cargaba el modelo COMPLETO en VRAM y explotaba
-                          #   en 12GB. Ir subiendo de a 2 desde acá, no bajando
-                          #   desde un número alto.
-                          #   NOTA: config.json es la fuente real en runtime
-                          #   (ver _llm_chat en graph_nodes.py); esto es solo
-                          #   el default de arranque si el JSON no la trae.
-    "num_thread": 8,
-    # Ornith-native sampling (se mergea en _llm_chat)
-    "temperature": 0.6,
-    "top_p": 0.95,
-    "top_k": 20,
-}
+OLLAMA_GEN_OPTIONS = _config_value("OLLAMA_GEN_OPTIONS", {})
 
 # Concurrencia del SERVIDOR ollama (no del cliente). El grafo es SECUENCIAL
 # (una request a la vez), así que un solo modelo cargado alcanza. Estas vars
@@ -214,8 +196,8 @@ OLLAMA_GEN_OPTIONS = {
 #   OLLAMA_NUM_PARALLEL      : requests concurrentes por modelo.
 #   OLLAMA_MAX_LOADED_MODELS : modelos distintos cargados a la vez (texto+visión).
 # Se setean en el entorno del servidor (no acá); ver explicación en el chat.
-OLLAMA_NUM_PARALLEL = 4
-OLLAMA_MAX_LOADED_MODELS = 2
+OLLAMA_NUM_PARALLEL = _config_value("OLLAMA_NUM_PARALLEL", 4)
+OLLAMA_MAX_LOADED_MODELS = _config_value("OLLAMA_MAX_LOADED_MODELS", 2)
 
 
 # =====================================================================

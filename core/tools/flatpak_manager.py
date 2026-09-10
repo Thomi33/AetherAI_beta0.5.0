@@ -12,6 +12,8 @@ def actualizar_flatpaks(mem: dict, salida_lista: str) -> None:
     Almacena varias claves para lookup rápido pero solo nombres/ID reales.
     """
     salida_lista = "" if salida_lista is None else str(salida_lista)
+    if not salida_lista.strip():
+        return
     mem.setdefault("flatpaks", {})
 
     for linea in salida_lista.strip().splitlines():

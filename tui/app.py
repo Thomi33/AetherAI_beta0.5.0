@@ -7,6 +7,8 @@ from rich.markup import escape
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, Static, Input, Button
 from textual import work
+from textual.timer import Timer
+import time
 
 from tui.widgets.chat_panel import ChatPanel
 from tui.widgets.plan_panel import PlanPanel
@@ -36,6 +38,7 @@ from tui.engine_bridge import (
     DoneEvent,
     ErrorEvent,
 )
+from tui.status_messages import STATUS_CONFIG, choose_flavor, real_state_for_node
 
 SLASH_HELP = (
     "Comandos disponibles:\n"
@@ -53,7 +56,8 @@ SLASH_HELP = (
     "  /mcps                  — toggle servidores MCP\n"
     "  /effort                — nivel de esfuerzo (low/medium/high/max)\n"
     "  /agents                — cambiar agente\n"
-    "  /new                   — nueva sesión"
+    "  /new                   — nueva sesión\n"
+    "  /stop                  — detener la inferencia actual"
 )
 
 
@@ -63,6 +67,7 @@ class AetherApp(App):
     BINDINGS = [
         ("tab", "open_agents", "agents"),
         ("ctrl+p", "open_commands", "commands"),
+        ("ctrl+c", "stop_inference", "⏹ detener inferencia"),
         ("f2", "toggle_dictado", "🎙️ dictar"),
     ]
 
@@ -85,6 +90,11 @@ class AetherApp(App):
         self._current_effort = "medium"
         self._workdir = workdir  # --workdir (lo aplica on_mount vía settings)
         self._grabador = None  # GrabadorAudio, lazy (ver core/services/stt_service.py)
+        self._estado_real = ""
+        self._inicio_operacion = 0.0
+        self._flavor_timer: Timer | None = None
+        self._startup_loading = False
+        self._startup_tick = 0
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -96,9 +106,14 @@ class AetherApp(App):
         yield SlashCompleter(id="slash_completer")
         yield PasteInput(placeholder="Escribí tu mensaje aquí...", id="input_chat")
         yield Button("Enviar", id="btn_enviar")
+        yield Button("⏹ Detener", id="btn_detener", variant="error", disabled=True)
         yield Footer()
 
     def on_mount(self) -> None:
+        self._flavor_timer = self.set_interval(
+            STATUS_CONFIG["flavor_interval_seconds"], self._mostrar_flavor
+        )
+        self.set_interval(0.35, self._animar_estado)
         # --workdir (TUI): fija AETHER_CWD antes de que el motor lea settings.
         # bin/aether ya exporta AETHER_CWD con el $PWD de invocación; acá solo
         # pisa si el usuario pasó --workdir explícito al comando `aether`.
@@ -111,58 +126,82 @@ class AetherApp(App):
         # el motor -- que ya puede tocar archivos en la sesión. La terminal
         # (jarvis_new.py / aether_run.py task) hace lo mismo con
         # presentacion_y_confirmacion(); acá es el modal DirAuthScreen.
-        try:
-            from core.config.dir_authorization import fue_evaluada, resolver_dir_trabajo
-            self._dir_trabajo = resolver_dir_trabajo()
-            if fue_evaluada(self._dir_trabajo):
-                self._arrancar_sesion()
-            else:
-                self.push_screen(DirAuthScreen(self._dir_trabajo), self._post_auth_gate)
-        except Exception:
-            # El gate no puede tirar abajo el arranque de la TUI.
+        from core.config.dir_authorization import (
+            esta_autorizado,
+            fue_evaluada,
+            resolver_dir_trabajo,
+        )
+        self._dir_trabajo = resolver_dir_trabajo()
+        if fue_evaluada(self._dir_trabajo) and esta_autorizado(self._dir_trabajo):
             self._arrancar_sesion()
+        else:
+            self.push_screen(DirAuthScreen(self._dir_trabajo), self._post_auth_gate)
 
     def _arrancar_sesion(self) -> None:
         """Continuación del arranque, después (o sin) el gate de directorio."""
+        self._startup_loading = True
+        self._mostrar_estado_real("iniciando grafo, espere")
         self._mostrar_banner_dir()
         self._inicializar_motor_bg()
 
     def _post_auth_gate(self, autorizado) -> None:
-        """Vuelta del modal DirAuthScreen: la decisión ya quedó persistida
-        (autorizar()/denegar() adentro del modal); acá solo informo y sigo."""
+        """Continúa solo si el Creador autorizó el directorio de trabajo."""
         ruta = getattr(self, "_dir_trabajo", "?")
-        try:
-            chat = self.query_one("#chat_panel", ChatPanel)
-            if autorizado:
-                chat.agregar_mensaje(
-                    f"✅ Autorizado. Trabajando en: {ruta}\n", "assistant")
-            else:
-                chat.agregar_mensaje(
-                    f"⚠️  No autorizado. Aether sigue funcionando, pero las rutas "
-                    f"relativas NO van a apuntar a {ruta} "
-                    f"(podés cambiarlo después editando ~/.aether/allowed_dirs.json).\n",
-                    "assistant")
-        except Exception:
-            pass
+        if not autorizado:
+            self.exit()
+            return
         self._arrancar_sesion()
 
     @work(thread=True)
     def _inicializar_motor_bg(self) -> None:
         try:
             inicializar_motor()
+            from core.agent.graph_builder import get_graph
+            get_graph()
             historial = obtener_historial_para_mostrar()
             chat_panel = self.query_one("#chat_panel", ChatPanel)
             self.call_from_thread(chat_panel.cargar_historial, historial)
+            self.call_from_thread(self._finalizar_inicio)
         except Exception as e:  # noqa: BLE001
             self.call_from_thread(
                 self.query_one("#chat_panel", ChatPanel).agregar_mensaje,
                 f"⚠️ Error inicializando el motor: {e}",
                 "assistant",
             )
+            self.call_from_thread(self._finalizar_inicio)
+
+    def _finalizar_inicio(self) -> None:
+        self._startup_loading = False
+        self._mostrar_estado_real("")
+
+    def _animar_estado(self) -> None:
+        if self._startup_loading:
+            self._startup_tick = (self._startup_tick + 1) % 4
+            self.query_one("#streaming_line", Static).update(
+                f"iniciando grafo, espere{'.' * self._startup_tick}"
+            )
+        elif self._thinking and self._estado_real:
+            self._startup_tick = (self._startup_tick + 1) % 4
+            self.query_one("#streaming_line", Static).update(
+                self._estado_real + "." * self._startup_tick
+            )
+        elif not self._thinking and self._estado_real.startswith("["):
+            self.query_one("#streaming_line", Static).update(self._estado_real)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn_enviar":
             self._enviar_mensaje()
+        elif event.button.id == "btn_detener":
+            self.action_stop_inference()
+
+    def action_stop_inference(self) -> None:
+        if not self._thinking:
+            return
+        from tui.engine_bridge import cancelar_inferencia
+        cancelar_inferencia()
+        self.query_one("#chat_panel", ChatPanel).agregar_mensaje(
+            "⏹ Deteniendo la inferencia...", "assistant"
+        )
 
     async def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "input_chat":
@@ -208,12 +247,14 @@ class AetherApp(App):
             event.stop()
 
     def _enviar_mensaje(self) -> None:
-        if self._thinking:
-            return
-
         input_widget = self.query_one("#input_chat", PasteInput)
         texto = input_widget.value.strip()
         if not texto:
+            return
+        if self._thinking:
+            if texto.lower() == "/stop":
+                input_widget.value = ""
+                self.action_stop_inference()
             return
         # Resolver placeholders "[pasted N characters]" al texto real antes
         # de procesar el mensaje (ver PasteInput en widgets/paste_input.py).
@@ -231,8 +272,12 @@ class AetherApp(App):
         chat_panel.agregar_mensaje(texto, "user")
 
         self._thinking = True
+        self._inicio_operacion = time.monotonic()
+        self._mostrar_estado_real("[•] Analizando solicitud...")
         self._respuesta_en_curso = ""
-        input_widget.disabled = True
+        input_widget.disabled = False
+        input_widget.placeholder = "Inferencia en curso — escribí /stop o usá Ctrl+C"
+        self.query_one("#btn_detener", Button).disabled = False
         self._procesar_orden_bg(texto)
 
     def _manejar_comando_slash(self, texto: str) -> None:
@@ -721,6 +766,9 @@ class AetherApp(App):
             self.query_one("#debug_panel", DebugPanel).agregar_log(evento.texto)
 
         elif isinstance(evento, NodeUpdateEvent):
+            estado = real_state_for_node(evento.nodo, evento.delta)
+            if estado:
+                self._mostrar_estado_real(estado)
             plan_panel = self.query_one("#plan_panel", PlanPanel)
             if hasattr(plan_panel, "actualizar_delta"):
                 plan_panel.actualizar_delta(evento.nodo, evento.delta)
@@ -734,12 +782,30 @@ class AetherApp(App):
             # volver a escribir sin esperar la consolidación de memoria.
             chat_panel.agregar_mensaje(evento.respuesta, "assistant")
             streaming_line.update("")
+            self._mostrar_estado_real("[✓] Operación completada")
             self._finalizar_turno()
 
         elif isinstance(evento, ErrorEvent):
-            chat_panel.agregar_mensaje(f"⚠️ Error: {evento.mensaje}", "assistant")
+            prefijo = "⏹" if "cancelada" in evento.mensaje.lower() else "⚠️ Error:"
+            chat_panel.agregar_mensaje(f"{prefijo} {evento.mensaje}", "assistant")
             streaming_line.update("")
+            self._mostrar_estado_real("[!] Se detectó un error.")
             self._finalizar_turno()
+
+    def _mostrar_estado_real(self, estado: str) -> None:
+        self._estado_real = estado
+        self.query_one("#streaming_line", Static).update(estado)
+
+    def _mostrar_flavor(self) -> None:
+        if not self._thinking:
+            return
+        if time.monotonic() - self._inicio_operacion < STATUS_CONFIG["min_operation_seconds"]:
+            return
+        flavor = choose_flavor()
+        if flavor:
+            self.query_one("#streaming_line", Static).update(
+                f"{self._estado_real}\n  {flavor}"
+            )
 
     def _mostrar_banner_dir(self) -> None:
         """Banner de sesión: dónde trabaja + estado de autorización."""
@@ -771,8 +837,12 @@ class AetherApp(App):
     def _finalizar_turno(self) -> None:
         self._thinking = False
         self._respuesta_en_curso = ""
+        self._startup_tick = 0
+        self.query_one("#streaming_line", Static).update(self._estado_real)
         input_widget = self.query_one("#input_chat", Input)
         input_widget.disabled = False
+        input_widget.placeholder = "Escribí tu mensaje aquí..."
+        self.query_one("#btn_detener", Button).disabled = True
         input_widget.focus()
 
 

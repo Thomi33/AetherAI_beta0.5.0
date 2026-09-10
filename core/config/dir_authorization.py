@@ -14,7 +14,9 @@ Piezas:
   (la exporta bin/aether, o la setean run.py/jarvis_new.py por sys.argv) > cwd
   real del proceso.
 - esta_autorizado(ruta) / fue_evaluada(ruta): estado persistido.
-- autorizar(ruta) / denegar(ruta): persisten la decisión del Creador.
+- autorizar(ruta): persiste la decisión del Creador.
+- denegar(ruta): no persiste la negativa, para volver a preguntar en el
+  siguiente lanzamiento.
 - listar_dirs(): rutas ya autorizadas (para `aether doctor`).
 - presentacion_y_confirmacion(ruta, confirmar_fn=None): flujo completo
   para entrypoints de TERMINAL (jarvis_new.py, aether_run.py task) --
@@ -122,7 +124,11 @@ def autorizar(ruta: Path | str) -> None:
 
 
 def denegar(ruta: Path | str) -> None:
-    _guardar_decision(ruta, False)
+    ruta_abs = str(Path(ruta).expanduser().resolve())
+    data = _leer_allowlist()
+    if ruta_abs in data:
+        del data[ruta_abs]
+        _escribir_allowlist(data)
 
 
 def _guardar_decision(ruta: Path | str, autorizado: bool) -> None:
@@ -139,8 +145,8 @@ def presentacion_y_confirmacion(ruta: Path | str, confirmar_fn=None) -> bool:
     """
     Flujo de autorización para entrypoints de TERMINAL: imprime la
     presentación del agente + pide confirmación, persiste la decisión y
-    la retorna. Pensado para llamarse solo cuando `fue_evaluada(ruta)`
-    es False -- si ya se evaluó antes, no hace falta volver a preguntar.
+    la     retorna. Las denegaciones no se persisten, por lo que una nueva ejecución
+    vuelve a preguntar por la carpeta.
 
     `confirmar_fn`: inyectable para no depender de input() real (tests,
     o un caller que ya tiene su propio prompt). Por defecto usa input().
@@ -160,8 +166,7 @@ def presentacion_y_confirmacion(ruta: Path | str, confirmar_fn=None) -> bool:
     else:
         denegar(ruta)
         print(
-            f"⚠️  No autorizado. Aether va a seguir funcionando, pero las rutas "
-            f"relativas de archivos/comandos NO van a apuntar a esta carpeta "
-            f"(podés cambiarlo después editando {RUTA_ALLOWLIST}).\n"
+            f"⚠️  No autorizado. Aether se va a cerrar y no trabajará en esta "
+            f"carpeta. Podés cambiarlo después editando {RUTA_ALLOWLIST}.\n"
         )
     return ok

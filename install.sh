@@ -2,7 +2,8 @@
 # ============================================================================
 # Aether Unified Installer — v3 (perfilado real de hardware + tiers)
 # Detecta CPU/RAM/VRAM/disco, verifica versiones y ajusta SOLO lo del
-# modelo: MODELO, VISION, NUM_CTX, NUM_PREDICT, turnos, threads, batch,
+# modelo: MODELO, VISION, NUM_CTX (2x el contexto base del tier), NUM_PREDICT,
+# turnos, threads, batch,
 # keep_alive. NO recorta features (ydotool, MCP, STT, etc. intactos).
 # Uso: ./install.sh [--tier LOW|MID|HIGH|ULTRA|POTATO] [--low-spec]
 #      [--minimal] [--no-system] [--no-ollama] [--model NOMBRE] [-y] [-h]
@@ -158,6 +159,35 @@ if [ ! -f ".env" ]; then
   echo "⚙️ Creando .env base..."
   printf 'AETHER_MODE=production\nLOG_LEVEL=info\n#OLLAMA_HOST=http://localhost:11434\n#OLLAMA_NUM_PARALLEL=1\n#OLLAMA_MAX_LOADED_MODELS=1\n' > .env
 fi
+if [ -z "${AETHER_DATA_DIR:-}" ]; then
+  echo
+  echo "🧠 Memoria de Aether"
+  echo "   Aether puede guardar su base, notas de contexto y logs en ~/Aether"
+  echo "   o dentro de la carpeta del proyecto ($INSTALL_DIR)."
+  if ask_yes "¿Querés que Aether tenga su propia carpeta ~/Aether?"; then
+    AETHER_DATA_DIR="$HOME/Aether"
+  else
+    AETHER_DATA_DIR="$INSTALL_DIR/.aether-data"
+    if [ ! -e "$AETHER_DATA_DIR/db/current.db" ] && [ -e "$HOME/Aether/db/current.db" ]; then
+      mkdir -p "$AETHER_DATA_DIR/db"
+      mv "$HOME/Aether/db/current.db" "$AETHER_DATA_DIR/db/current.db"
+      for suffix in -wal -shm; do
+        [ -e "$HOME/Aether/db/current.db$suffix" ] &&
+          mv "$HOME/Aether/db/current.db$suffix" "$AETHER_DATA_DIR/db/current.db$suffix"
+      done
+      ok "Base de memoria trasladada desde $HOME/Aether"
+    fi
+  fi
+else
+  echo "🧠 Memoria configurada por AETHER_DATA_DIR: $AETHER_DATA_DIR"
+fi
+mkdir -p "$AETHER_DATA_DIR"
+if grep -q '^AETHER_DATA_DIR=' .env 2>/dev/null; then
+  sed -i "s|^AETHER_DATA_DIR=.*|AETHER_DATA_DIR=$AETHER_DATA_DIR|" .env
+else
+  printf 'AETHER_DATA_DIR=%s\n' "$AETHER_DATA_DIR" >> .env
+fi
+ok "Datos de Aether: $AETHER_DATA_DIR"
 # Re-perfilado post-clone (ya existe tools/hardware_probe.py del repo).
 # Si el usuario forzó --tier, se re-emite el probe con ese tier para que
 # recomendado[] coincida (sin tocar el JSON a mano).
@@ -212,17 +242,12 @@ else
   if ollama list >/dev/null 2>&1; then ok "Ollama responde.";
     # El modelo ya viene del probe (tier); solo default de seguridad
     [ -z "$WANT_MODEL" ] && { [ "$TIER" = "POTATO" ] && WANT_MODEL="qwen2.5:1.5b" || WANT_MODEL="qwen2.5:3b"; }
-    VISION_MODEL=$(python3 -c "import json,sys;print(json.load(sys.stdin)['recomendado'].get('MODELO_VISION',''))" <<<"$PROBE_JSON" 2>/dev/null)
     if ollama list 2>/dev/null | grep -qi "$WANT_MODEL"; then ok "Modelo $WANT_MODEL presente.";
     else
-      NEED=$(modelo_gb "$WANT_MODEL"); echo "🦙 Tier $TIER → '$WANT_MODEL' (~${NEED}GB) + visión '$VISION_MODEL' (opcional).";
+      NEED=$(modelo_gb "$WANT_MODEL"); echo "🦙 Tier $TIER → '$WANT_MODEL' (~${NEED}GB, visión nativa).";
       if [ "$DISK_FREE_GB" != "?" ] && [ "$DISK_FREE_GB" != "-1" ] && [ "$DISK_FREE_GB" -lt "$(( NEED + 3 ))" ]; then warn "Disco justo (${DISK_FREE_GB}GB libres, pull necesita ~${NEED}GB). Liberá con: pacman -Sc / ~/.cache / ollama rm <viejo>"; fi
       if ask_yes "¿Descargar '$WANT_MODEL'?"; then ollama pull "$WANT_MODEL" && ok "Modelo listo." || warn "pull falló. Reintentá: ollama pull $WANT_MODEL";
       else echo "⏭️  Omitido. Luego: ollama pull $WANT_MODEL"; fi; fi
-    # Visión: solo sugerir, nunca obligar (no bloquea al agente)
-    if [ -n "$VISION_MODEL" ] && ! ollama list 2>/dev/null | grep -qi "$(echo "$VISION_MODEL" | cut -d: -f1)"; then
-      echo "ℹ️  Visión sugerida: ollama pull $VISION_MODEL (opcional, ~4GB)"
-    fi
   else warn "Ollama no responde (/tmp/ollama-serve.log). Sigo sin modelo."; fi
 fi
 

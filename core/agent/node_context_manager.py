@@ -57,9 +57,16 @@ def node_context_manager(state: AetherState) -> dict:
         "contexto": contexto,
     }
 
-    # ── Generar context dump (debug) ──────────────────────────────────
-    dump = construir_context_dump(mem, tema=tema, sesion_id=sesion_id, es_multitool=es_multitool)
-    print(f"\n{dump}")
+    # El dump requiere consultas SQLite adicionales y solo sirve para depurar.
+    # No debe pagar ese costo cada vez que se ejecuta una orden normal.
+    from core.config.config_manager import get_config_manager
+    if get_config_manager().get("DEBUG", False):
+        dump = construir_context_dump(
+            mem, tema=tema, sesion_id=sesion_id, es_multitool=es_multitool
+        )
+        print(f"\n{dump}")
+    else:
+        dump = ""
 
     return {
         "context_slots": context_slots,

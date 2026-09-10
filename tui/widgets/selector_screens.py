@@ -757,8 +757,7 @@ class DirAuthScreen(Screen):
     flujo de input() de la terminal a botones de la TUI.
 
     dismiss() retorna True si autorizó, False si denegó (el caller en
-    tui/app.py usa eso para el mensaje de resultado y el arranque del
-    motor).
+    tui/app.py cierra la aplicación cuando la decisión es negativa).
     """
 
     DEFAULT_CSS = """

@@ -1,0 +1,80 @@
+Aether project handoff
+======================
+
+Author: Github Copilot, GPT 5.6 Luna
+Date: 2026-09-10
+
+Read this file completely, save its useful information in your own project
+memory, and then delete this file from the repository. Do not leave a copy in
+the project after saving the handoff.
+
+Work completed
+--------------
+
+1. Runtime safety and execution
+   - Directory authorization is explicit and denied directories are not
+     persisted, so a future launch asks again.
+   - Inference cancellation is available through the TUI button, Ctrl+C, and
+     /stop. Cancellation is cooperative while waiting for Ollama events.
+   - Agent loops have a MAX_AGENT_STEPS guard.
+   - Startup/status animations stop when inference finishes.
+
+2. TUI and context
+   - Real execution statuses and optional personality messages are centralized
+     in tui/status_messages.py.
+   - Context compaction uses the message:
+     "aptretando contexto pa salvar tu VRAM..."
+   - Long-running context summaries are also persisted as:
+     $AETHER_DATA_DIR/notes/contexto_importante.md
+   - The summary is updated through the memory consolidator before/when context
+     is compacted, so important facts can survive prompt reduction.
+
+3. Model, vision, and web
+   - Vision uses the configured main model instead of a separate vision model.
+   - The installer no longer downloads a second vision model.
+   - The hardware probe doubles the recommended base context, capped at 65536.
+   - The prompts instruct Aether to use the web tool when information is
+     uncertain, current, version-specific, or externally verifiable, and then
+     verify results locally where appropriate.
+
+4. Configuration and memory location
+   - core/config/config.json is the single source of configurable values.
+   - core/config/settings.py remains as a compatibility adapter for legacy
+     imports, derived paths, AETHER_DATA_DIR, and dynamic RUTA_TRABAJO. It
+     should not accumulate duplicate configuration values.
+   - The installer asks whether Aether should have a separate home directory.
+     Yes uses ~/Aether. No uses <project>/.aether-data.
+   - The production database is:
+     $AETHER_DATA_DIR/db/current.db
+   - staging, snapshots, backups, notes, logs, and screenshots are also under
+     $AETHER_DATA_DIR.
+   - If the installer changes from ~/Aether to project-local data and an
+     existing current.db is present, it moves the database and SQLite WAL/SHM
+     sidecars.
+
+5. Documentation and cleanup
+   - Documentation was consolidated into README.md.
+   - Historical/redundant markdown files were removed.
+   - The audit utility is now tools/audit_project.py.
+   - Legacy root database/dump artifacts were moved under _legacy/data and are
+     not runtime production storage.
+
+Important validation
+--------------------
+
+- Python syntax checks passed for the changed configuration, memory, vision,
+  TUI, and audit modules.
+- install.sh passed bash -n.
+- config.json passed JSON validation.
+- JSON-backed settings import was tested successfully.
+- Do not assume the full test suite has passed after every recent change;
+  run the targeted tests and then the full existing suite before major use.
+
+Recommended next checks
+-----------------------
+
+1. Run: python -m pytest tests
+2. Confirm the configured model exists with: ollama list
+3. Review: git diff
+4. Test Aether on a disposable repository before using it on production code.
+5. Delete this file after saving this handoff, as requested above.

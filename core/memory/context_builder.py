@@ -44,7 +44,7 @@ _TEMAS_CHAT = ("chat", "text", "")
 
 def _limite_turnos(tema: str, es_multitool: bool) -> int:
     """
-    Ventana adaptativa de contexto (ver LATENCY_IMPROVEMENT_PLAN.md #3).
+    Ventana adaptativa de contexto (ver la sección de rendimiento del README).
 
     - Charla (chat/text/sin tema): ventana chica, evita que el modelo
       "siga" una tarea vieja de sesiones/turnos pasados.

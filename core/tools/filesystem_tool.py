@@ -1,7 +1,7 @@
 """
 Herramienta de sistema de archivos de primera clase para Aether.
 
-MOTIVO (auditoría 2026-09-06, punto 3 de opinion.md):
+MOTIVO (auditoría de arquitectura):
 node_codigo solo materializa el PRIMER bloque de código de la respuesta del
 LLM (bloques[0]) y file_write (file_writer.py) resuelve la ruta adivinando
 un token con regex sobre texto libre -- ninguno de los dos soporta "crear un

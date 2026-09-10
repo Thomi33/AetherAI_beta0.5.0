@@ -190,7 +190,7 @@ def _correr_grafo_en_hilo(orden: str, q: "queue.Queue[Evento]") -> None:
         from core.agent.graph_builder import get_graph
         from core.agent.graph_state import crear_estado_inicial
         from core.memory.memory_manager import registrar_turno
-        from core.agent.streaming import set_token_sink, clear_token_sink
+        from core.agent.streaming import InferenceCancelled, set_token_sink, clear_token_sink
 
         set_token_sink(lambda frag: q.put(TokenEvent(fragmento=frag)))
         registrar_turno(_motor.mem, "usuario", orden)
@@ -214,6 +214,9 @@ def _correr_grafo_en_hilo(orden: str, q: "queue.Queue[Evento]") -> None:
         programar_consolidacion(_motor.mem)
         q.put(DoneEvent(respuesta=respuesta))
 
+    except InferenceCancelled:
+        writer.vaciar_residual()
+        q.put(ErrorEvent(mensaje="Inferencia cancelada por el usuario."))
     except Exception as e:  # noqa: BLE001 — cualquier falla acá, incluidos imports, debe llegar a la UI
         writer.vaciar_residual()
         q.put(ErrorEvent(mensaje=f"{type(e).__name__}: {e}"))
@@ -235,6 +238,8 @@ def iter_eventos(orden: str) -> Iterator[Evento]:
     uno (bloqueante, pero se ejecuta en un worker thread, así que no
     congela la UI).
     """
+    from core.agent.streaming import reset_cancel
+    reset_cancel()
     q: "queue.Queue[Evento]" = queue.Queue()
     hilo = threading.Thread(target=_correr_grafo_en_hilo, args=(orden, q), daemon=True)
     hilo.start()
@@ -244,3 +249,9 @@ def iter_eventos(orden: str) -> Iterator[Evento]:
         yield evento
         if isinstance(evento, (DoneEvent, ErrorEvent)):
             break
+
+
+def cancelar_inferencia() -> None:
+    """Solicita detener la inferencia activa en el siguiente token recibido."""
+    from core.agent.streaming import request_cancel
+    request_cancel()

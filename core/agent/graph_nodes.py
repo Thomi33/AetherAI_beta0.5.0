@@ -173,7 +173,10 @@ def _llm_chat(system: str = None, user: str = None, messages: list = None, on_to
     respuesta = ""
     policy_start = time.time()
     try:
+        from core.agent.streaming import InferenceCancelled, is_cancelled
         for chunk in ollama.chat(**call_kwargs):
+            if is_cancelled():
+                raise InferenceCancelled()
             msg = chunk.get("message", {})
             token = msg.get("content", "")
             if token and on_token:
@@ -842,6 +845,7 @@ Servidores y herramientas MCP activas actualmente:
 {mcp_catalog}
 text: respuesta directa
 IMPORTANTE: Para guardar resultados en archivo usa SIEMPRE "file_write", NUNCA "shell" con echo/tee.
+Si existe incertidumbre técnica, un dato posiblemente desactualizado o una solución que debas confirmar, elegí primero "web" y luego aplicá/verificá el resultado si la tarea lo pide.
 El nodo file_write toma automáticamente el resultado del paso anterior, no necesitas especificar el contenido.
 IMPORTANTE: Si la tarea es "buscar cómo resolver/arreglar/instalar algo Y HACERLO" (el usuario espera que lo ejecutes, no solo que le cuentes qué encontraste), armá un plan de VARIOS pasos: primero "web" para buscar la solución, después "shell" o "codigo" para aplicarla. NO te quedes en un solo paso "web" cuando la tarea pide explícita o implícitamente una acción sobre lo encontrado.
 IMPORTANTE: Dos pedidos separados unidos por "y", "y luego", "después", etc. SIEMPRE son multi_tool=true, AUNQUE las dos acciones sean independientes entre sí y no compartan datos (ej: "ejecuta X y buscame Y" = un paso launch para X + un paso web para Y, cada uno con su propia instrucción). No asumas que multi-tool requiere que el segundo paso use el resultado del primero.
@@ -1808,6 +1812,17 @@ def node_agent_loop(state: AetherState) -> dict:
 
     agent_messages  = list(state.get("agent_messages") or [])
     agent_pasos_log = list(state.get("agent_pasos_log") or [])
+    max_agent_steps = get_config_manager().get("MAX_AGENT_STEPS", 6)
+
+    if len(agent_pasos_log) >= max_agent_steps:
+        return {
+            "final_response": (
+                f"Detuve el razonamiento tras {max_agent_steps} pasos para "
+                "evitar un bucle prolongado."
+            ),
+            "done": True,
+            "agent_activo": False,
+        }
 
     if not agent_messages:
         agent_messages = [
@@ -3159,8 +3174,8 @@ def node_vision(state: AetherState) -> dict:
     import time
     orden = state["orden"]
 
-    print("\n👁️  [VISIÓN]: Activando en 5 segundos — mové el cursor al monitor deseado")
-    for i in range(5, 0, -1):
+    print("\n👁️  [VISIÓN]: Preparando captura — mové el cursor al monitor deseado")
+    for i in range(2, 0, -1):
         print(f"   ⏳ {i}...", end="\r", flush=True)
         time.sleep(1)
     print("   📸 Capturando...          ")
@@ -3983,6 +3998,7 @@ def node_plan_executor(state: AetherState) -> dict:
     actualizacion: dict = {
         "plan_index":      plan_index + 1,
         "plan_resultados": plan_resultados,
+        "tool_actual":     tool,
         "error_intento":   0,
     }
     for campo in (

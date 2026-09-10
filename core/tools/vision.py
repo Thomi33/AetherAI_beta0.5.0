@@ -2,8 +2,7 @@
 Captura de pantalla y análisis de visión con Ollama.
 
 CORRECCIÓN vs versión anterior:
-- Usaba MODELO (qwen3.5:9b = texto puro) → falla silenciosa al recibir imágenes
-- Ahora usa MODELO_VISION (modelo multimodal dedicado)
+- Usa el modelo principal configurado; Ornith 1.5 soporta visión nativa
 - Mejor reporte de errores: muestra stderr de grim si falla
 """
 import subprocess
@@ -13,7 +12,7 @@ import json
 import time
 import requests
 
-from core.config.settings import MODELO_VISION, OLLAMA_HOST
+from core.config.settings import OLLAMA_HOST
 from core.agent.model_policy import ModelDecisionContext, choose_model, record_model_latency
 
 
@@ -24,7 +23,7 @@ def ver_pantalla(pregunta: str = "¿Qué ves en esta pantalla?") -> str:
 
     Requiere:
     - grim instalado (pacman -S grim)
-    - Un modelo multimodal en Ollama (ver settings.py → MODELO_VISION)
+    - Un modelo multimodal en Ollama (el modelo principal configurado)
     """
     screenshot = "/tmp/javier_vision.png"
 
@@ -71,9 +70,11 @@ def ver_pantalla(pregunta: str = "¿Qué ves en esta pantalla?") -> str:
             f"Pregunta del usuario: {pregunta}"
         )
 
+        from core.config.config_manager import get_config_manager
+        modelo_principal = get_config_manager().get("MODELO", "ornith:9b")
         decision_modelo = choose_model(ModelDecisionContext(
             task_kind="vision",
-            requested_model=MODELO_VISION,
+            requested_model=modelo_principal,
             prompt_chars=len(prompt_ajustado),
             context_size=8192,
         ))
@@ -98,7 +99,7 @@ def ver_pantalla(pregunta: str = "¿Qué ves en esta pantalla?") -> str:
             if "error" in data:
                 return (
                     f"El modelo de visión reportó un error: {data['error']}\n"
-                    f"Revisá que '{MODELO_VISION}' soporte imágenes (ollama list)."
+                    f"Revisá que '{modelo_principal}' soporte imágenes (ollama list)."
                 )
             return data.get("response", "Sin respuesta de mi modelo de visión.")
 
@@ -110,7 +111,7 @@ def ver_pantalla(pregunta: str = "¿Qué ves en esta pantalla?") -> str:
         return (
             f"Error HTTP {r.status_code} al consultar visión Ollama.\n"
             f"Detalle: {detalle_http}\n"
-            f"Modelo configurado: '{MODELO_VISION}' — ¿está instalado? (ollama list)"
+            f"Modelo configurado: '{modelo_principal}' — ¿está instalado? (ollama list)"
         )
 
     except Exception as e:
