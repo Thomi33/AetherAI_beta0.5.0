@@ -22,15 +22,24 @@ externos. El modelo corre en tu máquina mediante Ollama.
 
 ## Instalación
 
-### Requisitos
+### Descargar Aether
 
-- Linux (el instalador está optimizado para Arch Linux).
-- Python 3.10 o superior.
-- [Ollama](https://ollama.com) ejecutándose en `http://localhost:11434`.
-- `zsh` para las herramientas de shell.
-- `grim` solo si vas a usar visión en Hyprland/Wayland.
+No necesitás instalar manualmente Python, pip, Ollama ni las dependencias de
+Aether antes de empezar. El instalador se encarga de preparar el entorno.
 
-### Instalación recomendada
+Podés descargar el repositorio de dos formas:
+
+**Con Git:**
+
+```bash
+git clone https://github.com/Thomi33/AetherAI.git
+cd AetherAI
+```
+
+**Sin Git:** abrí el repositorio en GitHub, elegí **Code → Download ZIP**,
+descomprimí el archivo y abrí una terminal dentro de la carpeta `AetherAI`.
+
+### Instalar
 
 Desde la raíz del repositorio:
 
@@ -39,32 +48,50 @@ chmod +x install.sh
 ./install.sh
 ```
 
-El instalador:
+**Eso es todo.** El instalador se encarga automáticamente de:
 
-1. Detecta CPU, RAM, VRAM y espacio disponible.
-2. Recomienda un modelo y parámetros adecuados al equipo.
-3. Duplica el contexto base recomendado, con un máximo de `65536`.
-4. Descarga el modelo principal si lo autorizás.
-5. Configura el entorno sin eliminar funcionalidades opcionales.
+1. Detectar CPU, RAM, VRAM y espacio disponible.
+2. Elegir el tier de hardware (`POTATO`, `LOW`, `MID`, `HIGH` o `ULTRA`).
+3. Seleccionar el modelo y los parámetros apropiados para ese equipo.
+4. Instalar las dependencias Python del core de Aether.
+5. Preparar el entorno virtual de Aether.
+6. Instalar/verificar Ollama cuando corresponde.
+7. Descargar el modelo seleccionado, con tu autorización.
+8. Configurar memoria, SQLite y los parámetros de ejecución.
+9. Instalar el comando global `aether` en `~/.local/bin` y dejarlo disponible en
+   el `PATH`.
+10. Ejecutar una validación final del entorno y del modelo.
 
-La visión usa el mismo modelo principal: Ornith 1.5 con soporte multimodal.
-No se descarga un segundo modelo de visión.
+Durante la instalación solo se te pueden pedir algunas decisiones normales,
+como la contraseña de `sudo`, si querés guardar los datos en `~/Aether` y si
+querés descargar el modelo seleccionado.
 
-### Instalación manual
+No hace falta ejecutar después comandos de `pip`, crear otro virtualenv ni
+instalar las dependencias de Aether a mano.
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-ollama pull ornith-1.5:9b
-```
+### Hardware y perfiles
 
-Si tu hardware necesita otro modelo, podés indicarlo al instalador o editar
-`core/config/config.json`.
+El instalador adapta el modelo y los parámetros al equipo detectado. Por
+ejemplo, una máquina muy limitada puede terminar como `POTATO` y usar
+`qwen2.5:1.5b`, mientras un equipo más potente recibe un perfil superior.
+
+El contexto recomendado se ajusta automáticamente según el hardware, con un
+límite de `65536`.
+
+La visión usa el mismo modelo principal configurado cuando ese modelo soporta
+entrada multimodal; no se descarga un segundo modelo de visión.
 
 ## Uso
 
 ### TUI principal
+
+Después de instalar:
+
+```bash
+aether
+```
+
+También funciona directamente desde el proyecto:
 
 ```bash
 python run.py
@@ -72,7 +99,8 @@ python run.py
 
 ### Lanzador global
 
-El instalador puede crear el comando `aether` en `~/.local/bin`:
+El instalador crea el comando `aether` en `~/.local/bin`, por lo que podés
+abrir Aether desde cualquier directorio:
 
 ```bash
 aether
@@ -215,6 +243,7 @@ usa `<proyecto>/.aether-data/` para la base y sus notas.
 .
 ├── run.py                    # Entrada principal
 ├── install.sh                # Instalador y perfilado de hardware
+├── install-core.sh           # Implementación interna del instalador
 ├── bin/                      # Lanzador global aether
 ├── core/
 │   ├── agent/                # Grafo, planner, loop y tools
@@ -225,7 +254,7 @@ usa `<proyecto>/.aether-data/` para la base y sus notas.
 ├── tui/                      # Interfaz Textual y estados
 ├── skills/                   # Instrucciones reutilizables
 ├── tests/                    # Tests automatizados
-└── backend/                  # API FastAPI opcional
+└── backend/                  # API FastAPI experimental, no instalada por defecto
 ```
 
 Las skills operativas viven en `skills/<nombre>/SKILL.md`. Se mantienen como
@@ -234,24 +263,24 @@ documentación redundante.
 
 ## Backend opcional
 
-El flujo soportado es la TUI/CLI, pero existe una API FastAPI experimental:
+El backend FastAPI es experimental y **no forma parte de la instalación normal
+de la TUI**. Está separado para evitar que sus dependencias antiguas interfieran
+con el runtime actual. La futura WebUI se desarrollará en un repositorio aparte.
+
+Si necesitás trabajar con el backend experimental manualmente:
 
 ```bash
 cd backend
-pip install -r requirements.txt
-python -m uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
+../crewai-env/bin/python -m pip install -r requirements.txt
+../crewai-env/bin/python -m uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
-
-Endpoints principales: `GET /health`, `POST /api/chat`,
-`GET /api/conversations` y `GET /api/agent/status`. Swagger queda disponible
-en `http://localhost:8000/docs`.
 
 ## Desarrollo y pruebas
 
-Activá el entorno y ejecutá los tests existentes:
+El instalador normal ya crea y configura el entorno virtual. Para desarrollo:
 
 ```bash
-source .venv/bin/activate
+source crewai-env/bin/activate
 python -m pytest tests
 python -m py_compile run.py tui/app.py core/agent/graph_nodes.py
 ```
@@ -267,13 +296,20 @@ y sirve como diagnóstico manual; no forma parte del arranque normal.
 
 ## Solución de problemas
 
+### `aether` no aparece después de instalar
+
+El instalador agrega `~/.local/bin` al `PATH`. Si ya había una terminal abierta
+durante la instalación, reiniciá esa terminal para que herede el entorno nuevo.
+
 ### Ollama no responde
 
 ```bash
 ollama serve
 ollama list
-ollama pull ornith-1.5:9b
 ```
+
+En una instalación normal, el instalador ya verifica Ollama y descarga el modelo
+seleccionado cuando lo autorizás.
 
 ### El modelo responde lento
 
