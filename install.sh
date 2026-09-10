@@ -27,5 +27,25 @@ awk '
   { print }
 ' "$CORE" > "$tmp"
 
+# Asegurar que el launcher global quede disponible también en futuras shells.
+# No alcanza con exportarlo dentro de este proceso: el usuario debe poder
+# ejecutar `aether` inmediatamente después de cerrar/reabrir su terminal.
+LAUNCH_DEST="${AETHER_BIN_DIR:-$HOME/.local/bin}"
+if [ "$LAUNCH_DEST" = "$HOME/.local/bin" ]; then
+  case ":${PATH}:" in
+    *":$LAUNCH_DEST:"*) ;;
+    *)
+      for rc in "$HOME/.zshrc" "$HOME/.bashrc"; do
+        if [ -f "$rc" ] || [ "$rc" = "$HOME/.zshrc" ]; then
+          grep -Fqx 'export PATH="$HOME/.local/bin:$PATH"' "$rc" 2>/dev/null ||
+            printf '\n# Aether launcher\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$rc"
+          break
+        fi
+      done
+      export PATH="$LAUNCH_DEST:$PATH"
+      ;;
+  esac
+fi
+
 chmod +x "$tmp"
 exec "$tmp" "$@"
