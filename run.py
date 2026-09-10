@@ -24,6 +24,11 @@ for _i, _a in enumerate(sys.argv):
 PROJECT_ROOT = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# La memoria necesita su esquema antes de que la TUI cargue/cambie datos.
+# Es idempotente y crea current.db/tablas en el AETHER_DATA_DIR configurado.
+from core.memory.memory_manager import asegurar_esquema
+asegurar_esquema()
+
 # Importar y ejecutar la TUI moderna
 from tui.app import run
 
