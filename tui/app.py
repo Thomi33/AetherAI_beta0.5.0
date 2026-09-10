@@ -23,6 +23,7 @@ from tui.widgets.selector_screens import (
     EffortSelectorScreen,
     CommandPaletteScreen,
     MemoryEditorScreen,
+    DirAuthScreen,
 )
 
 from tui.engine_bridge import (
@@ -104,8 +105,46 @@ class AetherApp(App):
         if getattr(self, "_workdir", None):
             import os
             os.environ["AETHER_CWD"] = self._workdir
+
+        # Gate real de autorización (ver core/config/dir_authorization.py):
+        # si esta carpeta nunca fue evaluada, se pregunta ANTES de inicializar
+        # el motor -- que ya puede tocar archivos en la sesión. La terminal
+        # (jarvis_new.py / aether_run.py task) hace lo mismo con
+        # presentacion_y_confirmacion(); acá es el modal DirAuthScreen.
+        try:
+            from core.config.dir_authorization import fue_evaluada, resolver_dir_trabajo
+            self._dir_trabajo = resolver_dir_trabajo()
+            if fue_evaluada(self._dir_trabajo):
+                self._arrancar_sesion()
+            else:
+                self.push_screen(DirAuthScreen(self._dir_trabajo), self._post_auth_gate)
+        except Exception:
+            # El gate no puede tirar abajo el arranque de la TUI.
+            self._arrancar_sesion()
+
+    def _arrancar_sesion(self) -> None:
+        """Continuación del arranque, después (o sin) el gate de directorio."""
         self._mostrar_banner_dir()
         self._inicializar_motor_bg()
+
+    def _post_auth_gate(self, autorizado) -> None:
+        """Vuelta del modal DirAuthScreen: la decisión ya quedó persistida
+        (autorizar()/denegar() adentro del modal); acá solo informo y sigo."""
+        ruta = getattr(self, "_dir_trabajo", "?")
+        try:
+            chat = self.query_one("#chat_panel", ChatPanel)
+            if autorizado:
+                chat.agregar_mensaje(
+                    f"✅ Autorizado. Trabajando en: {ruta}\n", "assistant")
+            else:
+                chat.agregar_mensaje(
+                    f"⚠️  No autorizado. Aether sigue funcionando, pero las rutas "
+                    f"relativas NO van a apuntar a {ruta} "
+                    f"(podés cambiarlo después editando ~/.aether/allowed_dirs.json).\n",
+                    "assistant")
+        except Exception:
+            pass
+        self._arrancar_sesion()
 
     @work(thread=True)
     def _inicializar_motor_bg(self) -> None:
@@ -706,9 +745,14 @@ class AetherApp(App):
         """Banner de sesión: dónde trabaja + estado de autorización."""
         try:
             from core.config.dir_authorization import (
-                esta_autorizado, resolver_dir_trabajo)
+                esta_autorizado, fue_evaluada, resolver_dir_trabajo)
             ruta = resolver_dir_trabajo()
-            estado = "autorizado" if esta_autorizado(ruta) else "dir. nuevo (registrado)"
+            if esta_autorizado(ruta):
+                estado = "autorizado"
+            elif fue_evaluada(ruta):
+                estado = "denegado por el Creador"
+            else:
+                estado = "dir. nuevo (registrado)"
             try:
                 chat = self.query_one("#chat_panel", ChatPanel)
                 chat.agregar_mensaje(

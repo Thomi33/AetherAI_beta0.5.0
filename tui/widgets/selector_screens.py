@@ -8,6 +8,7 @@ Provee:
   - McpSelectorScreen     : toggle de servidores MCP
   - EffortSelectorScreen  : nivel de esfuerzo del modelo (low/medium/high/max)
   - CommandPaletteScreen  : paleta de comandos rápidos (Ctrl+P)
+  - DirAuthScreen         : gate de autorización del directorio de trabajo
 
 Cada Screen sigue el mismo patrón:
   1. Input de búsqueda filtrante en tiempo real.
@@ -25,7 +26,7 @@ from typing import Callable
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
-from textual.widgets import Input, Label, ListItem, ListView, Static, TextArea
+from textual.widgets import Button, Input, Label, ListItem, ListView, Static, TextArea
 from textual.containers import Vertical, Horizontal
 
 
@@ -740,3 +741,112 @@ class PastePreviewScreen(Screen):
 
     def action_dismiss_none(self) -> None:
         self.dismiss(None)
+
+
+# ───────────────────────────────────────────────── DIR AUTH GATE ─────────────────────────────────────────────
+
+class DirAuthScreen(Screen):
+    """
+    Gate de autorización de directorio para la TUI.
+
+    Se muestra SOLO la primera vez que Aether arranca en una carpeta
+    (fue_evaluada(ruta) es False): presenta al agente con el mismo texto
+    que los entrypoints de terminal (PRESENTACION en
+    core/config/dir_authorization.py) y persiste la decisión del Creador
+    con autorizar()/denegar(). No decide nada por su cuenta: traduce el
+    flujo de input() de la terminal a botones de la TUI.
+
+    dismiss() retorna True si autorizó, False si denegó (el caller en
+    tui/app.py usa eso para el mensaje de resultado y el arranque del
+    motor).
+    """
+
+    DEFAULT_CSS = """
+    DirAuthScreen {
+        align: center middle;
+        background: rgba(0,0,0,0.6);
+    }
+
+    #dirauth-box {
+        width: 68;
+        height: auto;
+        max-height: 92%;
+        background: $surface;
+        border: solid $warning;
+        padding: 1 2;
+    }
+
+    #dirauth-title {
+        text-style: bold;
+        color: $text;
+        border-bottom: solid $primary-darken-2;
+        height: 1;
+        margin-bottom: 1;
+    }
+
+    #dirauth-text {
+        height: auto;
+        max-height: 12;
+        overflow-y: auto;
+        color: $text;
+        margin-bottom: 1;
+    }
+
+    #dirauth-buttons {
+        height: auto;
+        align-horizontal: center;
+    }
+
+    #dirauth-buttons Button {
+        margin: 0 2;
+    }
+
+    #dirauth-footer {
+        height: 1;
+        margin-top: 1;
+        border-top: solid $primary-darken-2;
+        color: $text-muted;
+        padding: 0;
+    }
+    """
+
+    BINDINGS = [
+        Binding("s", "autorizar", "Autorizar", show=False),
+        Binding("n", "denegar", "Denegar", show=False),
+        Binding("escape", "denegar", "Denegar", show=False),
+    ]
+
+    def __init__(self, ruta):
+        super().__init__()
+        self._ruta = str(ruta)
+
+    def compose(self) -> ComposeResult:
+        from core.config.dir_authorization import PRESENTACION
+        with Vertical(id="dirauth-box"):
+            yield Static("Aether — autorización de directorio", id="dirauth-title")
+            yield Static(PRESENTACION.format(ruta=self._ruta), id="dirauth-text")
+            with Horizontal(id="dirauth-buttons"):
+                yield Button("✅ Autorizar (s)", variant="success", id="dirauth-btn-si")
+                yield Button("❌ No autorizar (n)", variant="error", id="dirauth-btn-no")
+            yield Static("s autorizar   n / esc denegar", id="dirauth-footer")
+
+    def on_mount(self) -> None:
+        self.query_one("#dirauth-btn-si", Button).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        # Mismo patrón que AetherApp.on_button_pressed (tui/app.py): decidir
+        # por id del botón, sin depender de helpers de versión de Textual.
+        if event.button.id == "dirauth-btn-si":
+            self.action_autorizar()
+        elif event.button.id == "dirauth-btn-no":
+            self.action_denegar()
+
+    def action_autorizar(self) -> None:
+        from core.config.dir_authorization import autorizar
+        autorizar(self._ruta)
+        self.dismiss(True)
+
+    def action_denegar(self) -> None:
+        from core.config.dir_authorization import denegar
+        denegar(self._ruta)
+        self.dismiss(False)

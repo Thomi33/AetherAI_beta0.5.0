@@ -41,8 +41,10 @@ def procesar_orden_completo(orden: str, mem: dict, modo_autonomo: bool = True) -
 
 
 def main():
-    from core.config.dir_authorization import resolver_dir_trabajo
+    from core.config.dir_authorization import resolver_dir_trabajo, fue_evaluada, presentacion_y_confirmacion
     ruta = resolver_dir_trabajo()
+    if not fue_evaluada(ruta):
+        presentacion_y_confirmacion(ruta)
     print(f"\n📁 Dir. trabajo: {ruta}")
     mem = cargar_memoria()
     core         = mem.get("core", {})

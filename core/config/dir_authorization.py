@@ -1,137 +1,167 @@
 """
-dir_authorization.py — Autorización explícita del directorio de trabajo.
+Autorización de directorio de trabajo.
 
-Aether trabaja sobre la carpeta desde la que se lo invoca (~/Documents,
-~/Proyecto, ...), NO encerrado en ~/Aether. Como eso implica escribir/
-ejecutar fuera del sandbox original, cada directorio requiere autorización
-explícita del usuario UNA sola vez; queda registrada en
-~/.aether/allowed_dirs.json.
+Aether puede operar sobre archivos reales del sistema (fs_write, shell,
+codigo, launch...), así que antes de tocar nada en una carpeta nueva le
+pide autorización explícita al Creador -- UNA VEZ por carpeta, no en cada
+turno. El "directorio de trabajo" es desde dónde se INVOCÓ `aether` (ver
+bin/aether, que exporta $AETHER_CWD con el $PWD de invocación antes de
+hacer `cd` al proyecto), no la carpeta del propio proyecto Aether.
 
-Prioridad de resolución (resolver_dir_trabajo):
-  1. --workdir <ruta> explícito (siempre pide confirmación si es nuevo)
-  2. $AETHER_CWD (lo exporta bin/aether con el $PWD original antes del cd)
-  3. os.getcwd() (cuando se corre directo: python run.py)
+Piezas:
+- resolver_dir_trabajo(workdir_cli=None): de dónde se lanzó Aether.
+  Prioridad: workdir_cli explícito (ej. `--workdir` ya parseado) > $AETHER_CWD
+  (la exporta bin/aether, o la setean run.py/jarvis_new.py por sys.argv) > cwd
+  real del proceso.
+- esta_autorizado(ruta) / fue_evaluada(ruta): estado persistido.
+- autorizar(ruta) / denegar(ruta): persisten la decisión del Creador.
+- listar_dirs(): rutas ya autorizadas (para `aether doctor`).
+- presentacion_y_confirmacion(ruta, confirmar_fn=None): flujo completo
+  para entrypoints de TERMINAL (jarvis_new.py, aether_run.py task) --
+  imprime la presentación + pide confirmación por input() por defecto.
+  La TUI (tui/app.py) usa su propio modal (DirAuthScreen en
+  tui/widgets/selector_screens.py) y llama a autorizar()/denegar() por
+  debajo, con el mismo texto de presentación (PRESENTACION) para que el
+  mensaje sea consistente en los dos casos.
 
-Seguridad:
-  - dentro_de(): jail blando — las tools verifican que el destino final
-    esté dentro de RUTA_TRABAJO o sea ruta absoluta explícita del usuario.
-  - Rutas del sistema (/etc, /sys, /proc, /dev, /boot, /root) siempre
-    requieren confirmación aunque el dir padre esté autorizado.
+El allowlist vive en ~/.aether/allowed_dirs.json -- FUERA del repo,
+porque es una decisión del USUARIO sobre SU sistema de archivos, no
+configuración versionable del agente (a diferencia de skills/, que sí
+vive dentro del repo). Forma:
+
+    {"<ruta_absoluta>": {"autorizado": bool, "fecha": "<iso 8601 UTC>"}}
 """
 from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
-ALLOWLIST_PATH = Path.home() / ".aether" / "allowed_dirs.json"
+RUTA_ALLOWLIST = Path.home() / ".aether" / "allowed_dirs.json"
 
-# Directorios donde NUNCA se opera sin confirmación explícita por comando,
-# aunque el directorio de trabajo esté autorizado.
-RUTAS_SENSIBLES = ("/etc", "/sys", "/proc", "/dev", "/boot", "/root",
-                   "/usr/lib", "/usr/bin", "/bin", "/sbin")
+PRESENTACION = """\
+🤖 Soy Aether, tu agente de IA local (LangGraph + Ollama).
 
+Todavía estoy en desarrollo activo: puedo ejecutar comandos de shell,
+crear/leer/modificar/borrar archivos, lanzar programas y navegar la web
+de forma autónoma. Eso también significa que puedo cometer errores --
+revisá lo que hago, sobre todo al principio.
 
-def _cargar_allowlist() -> set[str]:
-    try:
-        data = json.loads(ALLOWLIST_PATH.read_text())
-        return {str(Path(p).expanduser()).rstrip("/") for p in data if p}
-    except Exception:
-        return set()
+No trabajé nunca en esta carpeta:
+  {ruta}
+"""
 
-
-def _guardar_allowlist(dirs: set[str]) -> None:
-    try:
-        ALLOWLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
-        ALLOWLIST_PATH.write_text(json.dumps(sorted(dirs), indent=2))
-    except Exception:
-        pass
+PREGUNTA_CONFIRMACION = "¿Autorizás que Aether trabaje en esta carpeta? [s/N]: "
 
 
-def esta_autorizado(ruta: str | Path) -> bool:
-    """True si la ruta está dentro de algún directorio autorizado."""
-    r = str(Path(ruta).expanduser().resolve())
-    for base in _cargar_allowlist():
-        try:
-            if Path(r) == Path(base) or Path(r).is_relative_to(base):
-                return True
-        except Exception:
-            if r == base or r.startswith(base.rstrip("/") + "/"):
-                return True
-    return False
-
-
-def es_ruta_sensible(ruta: str | Path) -> bool:
-    r = str(Path(ruta).expanduser()).rstrip("/")
-    return any(r == s or r.startswith(s.rstrip("/") + "/")
-               for s in RUTAS_SENSIBLES)
-
-
-def dentro_de(ruta: str | Path, base: str | Path) -> bool:
-    """Jail blando: True si `ruta` resuelve dentro de `base`."""
-    try:
-        return (Path(ruta).expanduser().resolve().is_relative_to(
-            Path(base).expanduser().resolve()))
-    except Exception:
-        r = str(Path(ruta).expanduser().resolve())
-        b = str(Path(base).expanduser().resolve()).rstrip("/")
-        return r == b or r.startswith(b + "/")
-
-
-def autorizar_dir(ruta: str | Path, no_confirm: bool = False,
-                  preguntar_fn=None) -> bool:
-    """Registra el dir como autorizado. Pide confirmación salvo no_confirm
-    o que ya esté autorizado. Retorna True si quedó autorizado."""
-    r = str(Path(ruta).expanduser().resolve())
-    if esta_autorizado(r):
-        return True
-    if not no_confirm:
-        if preguntar_fn is None:
-            try:
-                resp = input(f"📁 ¿Autorizar a Aether a trabajar en {r}? [S/n] ")
-            except EOFError:
-                resp = "n"
-        else:
-            resp = preguntar_fn(r)
-        if str(resp).strip().lower() not in ("", "s", "si", "sí", "y", "yes"):
-            return False
-    dirs = _cargar_allowlist()
-    dirs.add(r)
-    _guardar_allowlist(dirs)
-    return True
-
-
-def resolver_dir_trabajo(workdir_cli: str | None = None,
-                         no_confirm: bool = False) -> Path:
-    """Resuelve y autoriza el directorio de trabajo.
-
-    Orden: --workdir > $AETHER_CWD (bin/aether) > cwd actual.
-    Si el dir es nuevo y hay TTY, pide confirmación una sola vez.
-    Sin TTY (pipes/scripts) y dir nuevo: autoriza igual pero lo deja
-    registrado (el usuario lo ve en el banner de sesión).
+def resolver_dir_trabajo(workdir_cli: str | None = None) -> Path:
     """
-    candidato = (workdir_cli
-                 or os.environ.get("AETHER_CWD")
-                 or os.getcwd())
-    ruta = Path(candidato).expanduser().resolve()
-    if not ruta.is_dir():
-        # Si no existe (typo en --workdir), caer al cwd real.
-        ruta = Path(os.getcwd()).resolve()
-    tiene_tty = False
+    Resuelve el directorio de trabajo actual, en orden de prioridad:
+      1. `workdir_cli` si se pasa explícito (ej. un --workdir ya parseado
+         por el caller, sin pasar por la env var).
+      2. $AETHER_CWD si está seteada (bin/aether la exporta con el $PWD
+         de invocación, o run.py/jarvis_new.py con --workdir).
+      3. El cwd real del proceso (fallback para cuando se corre algo
+         directo sin pasar por bin/aether, ej. tests).
+    """
+    if workdir_cli and workdir_cli.strip():
+        return Path(workdir_cli).expanduser().resolve()
+    cwd_env = os.environ.get("AETHER_CWD")
+    if cwd_env and cwd_env.strip():
+        return Path(cwd_env).expanduser().resolve()
+    return Path.cwd().resolve()
+
+
+def _leer_allowlist() -> dict:
+    if not RUTA_ALLOWLIST.is_file():
+        return {}
     try:
-        tiene_tty = bool(os.isatty(0))
+        data = json.loads(RUTA_ALLOWLIST.read_text(encoding="utf-8"))
     except Exception:
-        pass
-    if tiene_tty and not no_confirm:
-        autorizar_dir(ruta, no_confirm=False)
-    else:
-        # No interactivo: registrar silenciosamente (visible en banner/doctor).
-        dirs = _cargar_allowlist()
-        if str(ruta) not in dirs:
-            dirs.add(str(ruta))
-            _guardar_allowlist(dirs)
-    return ruta
+        return {}
+    # Compatibilidad: la version anterior guardaba una LISTA de rutas que el
+    # Creador ya usaba. Se migra a la forma nueva en memoria (autorizado=True,
+    # fue una decision explicita suya en su momento); el archivo se reescribe
+    # en formato nuevo la proxima vez que se persista una decision.
+    if isinstance(data, list):
+        data = {
+            str(r): {"autorizado": True, "fecha": None, "migrado": True}
+            for r in data
+            if isinstance(r, str) and r.strip()
+        }
+    return data if isinstance(data, dict) else {}
+
+
+def _escribir_allowlist(data: dict) -> None:
+    RUTA_ALLOWLIST.parent.mkdir(parents=True, exist_ok=True)
+    RUTA_ALLOWLIST.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def fue_evaluada(ruta: Path | str) -> bool:
+    """True si ya se le preguntó al Creador por esta ruta EXACTA (sea cual haya sido la respuesta)."""
+    return str(Path(ruta).expanduser().resolve()) in _leer_allowlist()
+
+
+def esta_autorizado(ruta: Path | str) -> bool:
+    """True solo si esa ruta EXACTA fue autorizada explícitamente (no hereda de un directorio padre)."""
+    entrada = _leer_allowlist().get(str(Path(ruta).expanduser().resolve()))
+    return bool(entrada and entrada.get("autorizado") is True)
 
 
 def listar_dirs() -> list[str]:
-    return sorted(_cargar_allowlist())
+    """Rutas ya AUTORIZADAS (no incluye las denegadas), ordenadas -- para `aether doctor`."""
+    data = _leer_allowlist()
+    return sorted(r for r, v in data.items() if isinstance(v, dict) and v.get("autorizado") is True)
+
+
+def autorizar(ruta: Path | str) -> None:
+    _guardar_decision(ruta, True)
+
+
+def denegar(ruta: Path | str) -> None:
+    _guardar_decision(ruta, False)
+
+
+def _guardar_decision(ruta: Path | str, autorizado: bool) -> None:
+    ruta_abs = str(Path(ruta).expanduser().resolve())
+    data = _leer_allowlist()
+    data[ruta_abs] = {
+        "autorizado": autorizado,
+        "fecha": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    _escribir_allowlist(data)
+
+
+def presentacion_y_confirmacion(ruta: Path | str, confirmar_fn=None) -> bool:
+    """
+    Flujo de autorización para entrypoints de TERMINAL: imprime la
+    presentación del agente + pide confirmación, persiste la decisión y
+    la retorna. Pensado para llamarse solo cuando `fue_evaluada(ruta)`
+    es False -- si ya se evaluó antes, no hace falta volver a preguntar.
+
+    `confirmar_fn`: inyectable para no depender de input() real (tests,
+    o un caller que ya tiene su propio prompt). Por defecto usa input().
+    """
+    ruta = Path(ruta).expanduser().resolve()
+    print(PRESENTACION.format(ruta=ruta))
+
+    if confirmar_fn is None:
+        resp = input(PREGUNTA_CONFIRMACION).strip().lower()
+        ok = resp in ("s", "si", "sí", "y", "yes")
+    else:
+        ok = bool(confirmar_fn(str(ruta)))
+
+    if ok:
+        autorizar(ruta)
+        print(f"✅ Autorizado. Trabajando en: {ruta}\n")
+    else:
+        denegar(ruta)
+        print(
+            f"⚠️  No autorizado. Aether va a seguir funcionando, pero las rutas "
+            f"relativas de archivos/comandos NO van a apuntar a esta carpeta "
+            f"(podés cambiarlo después editando {RUTA_ALLOWLIST}).\n"
+        )
+    return ok
