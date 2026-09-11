@@ -57,6 +57,7 @@ SLASH_HELP = (
     "  /effort                — nivel de esfuerzo (low/medium/high/max)\n"
     "  /agents                — cambiar agente\n"
     "  /new                   — nueva sesión\n"
+    "  /pay-roblox            — enfocar Sober e iniciar/detener autonomía Roblox\n"
     "  /stop                  — detener la inferencia actual"
 )
 
@@ -95,6 +96,7 @@ class AetherApp(App):
         self._flavor_timer: Timer | None = None
         self._startup_loading = False
         self._startup_tick = 0
+        self._roblox_runtime = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -379,6 +381,9 @@ class AetherApp(App):
             else:
                 self._abrir_memory_editor()
 
+        elif cmd == "/pay-roblox":
+            self._manejar_pay_roblox(partes[1].lower() if len(partes) > 1 else "start")
+
         elif cmd == "/agents":
             self._abrir_agent_selector()
 
@@ -387,6 +392,27 @@ class AetherApp(App):
 
         else:
             chat_panel.agregar_mensaje(f"⚠️ Comando desconocido: {cmd}. Probá /help", "assistant")
+
+    def _manejar_pay_roblox(self, accion: str) -> None:
+        """Controls the separate Roblox runtime through one lifecycle command."""
+        from core.tools.roblox_bridge import RobloxRuntime
+        chat_panel = self.query_one("#chat_panel", ChatPanel)
+        if self._roblox_runtime is None:
+            self._roblox_runtime = RobloxRuntime()
+        try:
+            if accion == "stop":
+                ok, message = self._roblox_runtime.stop()
+            elif accion in {"start", "status"}:
+                if accion == "start":
+                    ok, message = self._roblox_runtime.start()
+                else:
+                    ok, message = True, "Roblox autónomo activo." if self._roblox_runtime.running else "Roblox autónomo detenido."
+            else:
+                ok, message = False, "Uso: /pay-roblox [stop|status]"
+        except (OSError, RuntimeError, ValueError) as exc:
+            ok, message = False, str(exc)
+        prefix = "✅" if ok else "⚠️"
+        chat_panel.agregar_mensaje(f"{prefix} {message}", "assistant")
 
     def _listar_sesiones(self) -> None:
         from core.memory.memory_manager import listar_sesiones
@@ -505,6 +531,9 @@ class AetherApp(App):
 
     def on_unmount(self) -> None:
         """Corta cualquier grabación en curso y apaga el worker de STT al cerrar la TUI."""
+        if self._roblox_runtime is not None:
+            self._roblox_runtime.stop()
+            self._roblox_runtime = None
         try:
             if self._grabador and self._grabador.grabando:
                 self._grabador.descartar()
