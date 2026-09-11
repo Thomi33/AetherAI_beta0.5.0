@@ -86,7 +86,14 @@ if [ "$NO_SYSTEM" = "0" ]; then
   [ -z "$SUDO" ] || have sudo || die "Necesito sudo para instalar dependencias del sistema."
   echo "📦 Instalando dependencias del sistema..."
   if [ "$IS_ARCH" = "1" ] && have pacman; then
-    $SUDO pacman -Sy --needed --noconfirm git base-devel python python-pip python-virtualenv sqlite curl ffmpeg ollama docker docker-compose wl-clipboard grim slurp ydotool 2>&1 | tail -8 || die "Falló la instalación de dependencias con pacman."
+    ARCH_PACKAGES=(git base-devel python python-pip python-virtualenv sqlite curl ffmpeg docker docker-compose wl-clipboard grim slurp ydotool)
+    if have ollama; then
+      ok "Ollama ya está instalado ($(ollama --version 2>/dev/null || echo 'versión desconocida'))."
+      echo "   → Reutilizando instalación existente; no se instala el paquete de pacman."
+    else
+      ARCH_PACKAGES+=(ollama)
+    fi
+    $SUDO pacman -Sy --needed --noconfirm "${ARCH_PACKAGES[@]}" 2>&1 | tail -8 || die "Falló la instalación de dependencias con pacman."
   elif [ "$IS_DEBIAN" = "1" ] && have apt-get; then
     $SUDO apt-get update -y >/dev/null
     $SUDO apt-get install -y git build-essential python3 python3-venv python3-pip sqlite3 curl ffmpeg docker.io docker-compose-plugin wl-clipboard grim slurp 2>&1 | tail -8 || die "Falló la instalación de dependencias con apt."
