@@ -16,7 +16,23 @@ from core.config.settings import OLLAMA_HOST
 from core.agent.model_policy import ModelDecisionContext, choose_model, record_model_latency
 
 
-def ver_pantalla(pregunta: str = "¿Qué ves en esta pantalla?") -> str:
+def capturar_pantalla() -> bytes:
+    """Captura la pantalla completa y devuelve los bytes PNG para un consumidor."""
+    resultado = subprocess.run(
+        ["grim"],
+        capture_output=True,
+        timeout=10,
+    )
+    if resultado.returncode != 0:
+        stderr = resultado.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"No pude capturar la pantalla: {stderr or 'grim falló'}")
+    return resultado.stdout
+
+
+def ver_pantalla(
+    pregunta: str = "¿Qué ves en esta pantalla?",
+    crop: tuple[int, int, int, int] | None = None,
+) -> str:
     """
     Toma screenshot del monitor activo en Hyprland.
     Lo analiza con el modelo de visión local en Ollama.
@@ -42,7 +58,13 @@ def ver_pantalla(pregunta: str = "¿Qué ves en esta pantalla?") -> str:
             pass  # Sin Hyprland o hyprctl → captura pantalla completa
 
         # Capturar screenshot con grim
-        _cmd = ["grim", "-o", _activo, screenshot] if _activo else ["grim", screenshot]
+        if crop is not None:
+            x, y, width, height = (int(value) for value in crop)
+            if width <= 0 or height <= 0:
+                return "El recorte de pantalla debe tener ancho y alto positivos."
+            _cmd = ["grim", "-g", f"{x},{y} {width}x{height}", screenshot]
+        else:
+            _cmd = ["grim", "-o", _activo, screenshot] if _activo else ["grim", screenshot]
         resultado = subprocess.run(_cmd, capture_output=True, timeout=10)
 
         if resultado.returncode != 0:

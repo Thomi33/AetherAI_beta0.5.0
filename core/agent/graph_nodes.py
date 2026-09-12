@@ -61,8 +61,15 @@ from core.tools.shell_executor import ejecutar_comando
 from core.tools.web_search import buscar_web
 from core.tools.url_reader import leer_url
 from core.tools.vision import ver_pantalla
-from core.tools.computer_control import click_en, escribir_texto, mover_mouse
-from core.tools.flatpak_manager import buscar_flatpak_en_memoria, actualizar_flatpaks
+from core.tools.computer_control import (
+    cambiar_workspace,
+    click_en,
+    enfocar_ventana,
+    escribir_texto,
+    iniciar_secuencia,
+    mover_mouse,
+)
+from core.tools.flatpak_manager import actualizar_flatpaks
 from core.parser.shell_parser import extraer_comando_shell
 from core.tools.file_writer import escribir_archivo
 from core.tools.filesystem_tool import (
@@ -72,7 +79,6 @@ from core.tools.filesystem_tool import (
     crear_directorio_fs,
     listar_directorio_fs,
 )
-from core.events import get_event_bus, Event
 from core.config import get_config_manager
 from core.agent.model_policy import ModelDecisionContext, choose_model, record_model_latency
 
@@ -81,23 +87,6 @@ from core.agent.graph_state import AetherState
 # ══════════════════════════════════════════════════════════════════════
 # HELPERS INTERNOS
 # ══════════════════════════════════════════════════════════════════════
-
-def _emitir_evento(type: str, payload: dict) -> None:
-    """Helper para emitir eventos al EventBus."""
-    try:
-        bus = get_event_bus()
-        bus.publish(Event(type=type, payload=payload))
-    except Exception:
-        pass  # No romper si EventBus no está inicializado
-
-
-def _print_event(type: str, message: str, **kwargs) -> None:
-    """
-    Print que también emite un evento.
-    Mantiene compatibilidad con prints existentes.
-    """
-    _emitir_evento(type, {"message": message, **kwargs})
-    print(message)
 
 
 def _llm_chat(system: str = None, user: str = None, messages: list = None, on_token=None, tools: list = None, min_predict: int | None = None) -> str:
@@ -298,44 +287,11 @@ def _normalizar(texto: str) -> str:
     return "".join(c for c in descompuesto if not unicodedata.combining(c))
 
 
-_KW_CODIGO = re.compile(
-    r"\b(escribe|crea|genera|script|funcion|clase|implementa"
-    r"|codigo|python|java|bash|html|css|javascript)\b",
-    re.IGNORECASE,
-)
-
 _STOP_WORDS = frozenset([
     "el", "la", "los", "las", "un", "una", "por", "favor", "me",
     "con", "sin", "en", "de", "del", "al",
 ])
-_KW_SISTEMA_LOCAL_N = frozenset(_normalizar(k) for k in [
-    "disco", "espacio en disco", "espacio libre", "espacio disponible",
-    "mi home", "ram", "memoria ram", "cpu", "procesador", "caché", "cache",
-])
-_VERBOS_CONSULTA_SISTEMA_N = frozenset(_normalizar(k) for k in [
-    "escanea", "escaneá", "escanear", "revisa", "revisá", "revisar",
-    "chequea", "chequeá", "chequear", "mide", "medí", "medir",
-    "consume", "ocupa", "ocupan", "libera", "liberar", "cuanto", "cuánto",
-])
 
-def _parece_consulta_sistema_local(orden_lower: str) -> bool:
-    """
-    Prioriza 'shell' sobre 'web' cuando la orden es sobre el HARDWARE/estado
-    real del equipo (disco, RAM, CPU, caché). Web nunca puede responder esto
-    con datos reales — solo shell (du/df/free) puede. Existe porque keywords
-    genéricas como 'cuánto' antes empujaban esto a 'web', que terminaba
-    reportando cifras de artículos genéricos como si fueran mediciones reales
-    del equipo del usuario.
-    """
-    o = _normalizar(orden_lower)
-    tiene_sustantivo = any(
-        kw in o for kw in _KW_SISTEMA_LOCAL_N
-    )
-    tiene_verbo = any(
-        re.search(rf"\b{re.escape(v)}\b", o) if " " not in v else v in o
-        for v in _VERBOS_CONSULTA_SISTEMA_N
-    )
-    return tiene_sustantivo and tiene_verbo
 
 # ══════════════════════════════════════════════════════════════════════
 # KEYWORDS EDITABLES (cargadas desde JSON, sin tocar código Python)
@@ -374,16 +330,9 @@ def _cargar_keywords_config() -> dict:
 
 _KEYWORDS = _cargar_keywords_config()
 
-_KW_WEB_N            = frozenset(_normalizar(k) for k in _KEYWORDS.get("web", []))
-_KW_VISION_N         = frozenset(_normalizar(k) for k in _KEYWORDS.get("vision", []))
-_KW_COMPUTER_USE_N   = frozenset(_normalizar(k) for k in _KEYWORDS.get("computer_use", []))
 _KW_LAUNCH_N         = frozenset(_normalizar(k) for k in _KEYWORDS.get("launch", []))
-_KW_LAUNCH_EXCLUYE_N = frozenset(_normalizar(k) for k in _KEYWORDS.get("launch_excluye", []))
-_KW_MEMORY_N         = frozenset(_normalizar(k) for k in _KEYWORDS.get("memory", []))
 _KW_ANAFORICO_N      = frozenset(_normalizar(k) for k in _KEYWORDS.get("anaforico", []))
 _KW_CORRECCION_N     = frozenset(_normalizar(k) for k in _KEYWORDS.get("correccion", []))
-_KW_ACCION_RESULTADO_N = frozenset(_normalizar(k) for k in _KEYWORDS.get("accion_resultado", []))
-_KW_MCP_N = frozenset(["usando mcp", "via mcp", "con mcp", "model context protocol", "mcp"])
 
 
 def _parece_correccion_usuario(orden_lower: str) -> bool:
@@ -414,215 +363,6 @@ def _parece_correccion_usuario(orden_lower: str) -> bool:
     )
 
 
-def _inferir_args_mcp(orden: str, manager) -> dict:
-    """
-    Infiere server/name/arguments MCP de forma GENÉRICA usando:
-    1. Catálogo real de TODOS los servers configurados
-    2. LLM para elegir la tool más adecuada y sus argumentos
-    3. Validación de argumentos requeridos + valores por defecto
-    4. Fallback heurístico si el LLM falla
-    """
-    import json
-
-    # 1. Obtener catálogo real
-    try:
-        catalogo = manager.list_all_tools()  # {server: [tools...]}
-    except Exception as e:
-        print(f"   └─ ️  [MCP]: no se pudo obtener catálogo ({e})")
-        return {"server": "", "name": "", "arguments": {}}
-
-    if not catalogo or all(not tools for tools in catalogo.values()):
-        print(f"   └─ ⚠️  [MCP]: no hay servers/tools disponibles")
-        return {"server": "", "name": "", "arguments": {}}
-
-    # 2. Construir catálogo condensado para el LLM
-    lineas_catalogo = []
-    for server, tools in catalogo.items():
-        for t in tools:
-            name = t.get("name", "unknown")
-            desc = t.get("description", "").replace("\n", " ")[:150]
-            schema = t.get("input_schema", {})
-            required = schema.get("required", [])
-            args_info = ", ".join(required) if required else "ninguno"
-            lineas_catalogo.append(
-                f"  - Server '{server}', tool '{name}': {desc} | Args requeridos: {args_info}"
-            )
-
-    catalogo_str = "\n".join(lineas_catalogo)
-
-    # 3. Pedir al LLM que elija la tool y argumentos
-    prompt = f"""El usuario pidió: "{orden}"
-
-Herramientas MCP disponibles:
-{catalogo_str}
-
-Respondé SOLO con un JSON válido en este formato exacto (sin explicaciones, sin markdown):
-{{"server": "nombre_del_server", "name": "nombre_de_la_tool", "arguments": {{"arg1": "valor1"}}}}
-
-Reglas CRÍTICAS:
-- Elegí la tool más adecuada para la orden del usuario
-- Completá TODOS los argumentos requeridos con valores razonables y específicos
-- Para filesystem: usá paths reales como /home/thomi (NO dejes vacío)
-- Para búsquedas: usá el tema específico de la orden (NO términos genéricos)
-- Si no hay una tool obvia, respondé {{"server": "", "name": "", "arguments": {{}}}}"""
-
-    try:
-        try:
-            raw = _llm_chat(
-                system="Eres un selector de herramientas MCP experto. Respondé SOLO JSON válido.",
-                user=prompt,
-                min_predict=_num_predict_planner(),
-            )
-        except TypeError as exc:
-            if "min_predict" not in str(exc):
-                raise
-            raw = _llm_chat(
-                system="Eres un selector de herramientas MCP experto. Respondé SOLO JSON válido.",
-                user=prompt,
-            )
-        _, contenido = _parse_ornith_thinking(raw)
-
-        # Limpiar markdown
-        if "```json" in contenido:
-            contenido = contenido.split("```json", 1)[1].split("```", 1)[0].strip()
-        elif "```" in contenido:
-            contenido = contenido.split("```", 1)[1].split("```", 1)[0].strip()
-
-        try:
-            data = json.loads(contenido)
-        except Exception:
-            # Los modelos locales suelen anteponer una frase o un bloque think;
-            # reutilizamos el parser balanceado del planner antes de abandonar
-            # una tool MCP perfectamente seleccionable.
-            data = _extraer_json_objeto(contenido)
-
-        # Validar estructura
-        if isinstance(data, dict):
-            server = data.get("server", "")
-            name = data.get("name", "")
-            arguments = data.get("arguments", {})
-
-            if not server and not name:
-                return {"server": "", "name": "", "arguments": {}}
-
-            if server in catalogo:
-                tools_del_server = catalogo[server]
-                tool_obj = next((t for t in tools_del_server if t.get("name") == name), None)
-
-                if tool_obj:
-                    # VALIDACIÓN DE ARGUMENTOS REQUERIDOS
-                    schema = tool_obj.get("input_schema", {})
-                    required_args = schema.get("required", [])
-                    properties = schema.get("properties", {})
-
-                    # Completar argumentos faltantes con valores por defecto
-                    for arg_name in required_args:
-                        if arg_name not in arguments or not arguments[arg_name]:
-                            if arg_name == "path":
-                                arguments[arg_name] = "/home/thomi"
-                            elif arg_name == "query":
-                                arguments[arg_name] = orden.lower().replace("usando mcp", "").strip()
-                            elif arg_name == "sql":
-                                arguments[arg_name] = "SELECT 1"
-                            else:
-                                arguments[arg_name] = ""
-                                
-                    arguments = _normalizar_args_mcp(server, name, arguments, orden)
-                    print(f"   └─ [MCP]: LLM eligió server='{server}', tool='{name}'")
-                    print(f"   └─ [MCP]: Args finales (validados): {arguments}")
-                    return {"server": server, "name": name, "arguments": arguments}
-    except Exception as e:
-        print(f"   └─ ⚠️  [MCP]: LLM falló al inferir args ({e})")
-
-    # 4. Fallback heurístico robusto
-    orden_lower = orden.lower()
-
-    # Filesystem
-    if "server_filesystem" in catalogo:
-        if any(kw in orden_lower for kw in ["directorio", "lista", "ls", "archivos"]):
-            return {"server": "server_filesystem", "name": "list_directory", "arguments": {"path": "/home/thomi"}}
-        if any(kw in orden_lower for kw in ["leer", "cat", "ver archivo"]):
-            return {"server": "server_filesystem", "name": "read_text_file", "arguments": {"path": "/home/thomi"}}
-
-    # GitHub
-    if "github" in catalogo:
-        if any(kw in orden_lower for kw in ["github", "repositorio", "repo"]):
-            args = _normalizar_args_mcp("github", "search_repositories", {"query": orden_lower}, orden)
-            return {"server": "github", "name": "search_repositories", "arguments": args}
-            
-    # Notion
-    if "notion" in catalogo:
-        if any(kw in orden_lower for kw in ["notion", "nota"]):
-            query_raw = orden_lower.replace("notion", "").replace("nota", "").replace("busca", "").replace("en", "")
-            query = query_raw.strip()
-            if not query:
-                query = "hoy"
-            return {"server": "notion", "name": "API-post-search", "arguments": {"query": query}}
-
-    print(f"   ─ ⚠️  [MCP]: fallback no pudo inferir args para '{orden_lower}'")
-    return {"server": "", "name": "", "arguments": {}}
-
-def recargar_keywords_config() -> None:
-    """
-    Recarga keywords_config.json en caliente, sin reiniciar el proceso.
-    Útil si ajustás el JSON mientras Aether está corriendo (TUI persistente).
-    """
-    global _KEYWORDS, _KW_WEB_N, _KW_VISION_N, _KW_COMPUTER_USE_N, _KW_LAUNCH_N, _KW_LAUNCH_EXCLUYE_N, _KW_MEMORY_N, _KW_ANAFORICO_N, _KW_CORRECCION_N, _KW_ACCION_RESULTADO_N, _KW_MCP_N
-    _KEYWORDS = _cargar_keywords_config()
-    _KW_WEB_N            = frozenset(_normalizar(k) for k in _KEYWORDS.get("web", []))
-    _KW_VISION_N         = frozenset(_normalizar(k) for k in _KEYWORDS.get("vision", []))
-    _KW_COMPUTER_USE_N   = frozenset(_normalizar(k) for k in _KEYWORDS.get("computer_use", []))
-    _KW_LAUNCH_N         = frozenset(_normalizar(k) for k in _KEYWORDS.get("launch", []))
-    _KW_LAUNCH_EXCLUYE_N = frozenset(_normalizar(k) for k in _KEYWORDS.get("launch_excluye", []))
-    _KW_MEMORY_N         = frozenset(_normalizar(k) for k in _KEYWORDS.get("memory", []))
-    _KW_ANAFORICO_N      = frozenset(_normalizar(k) for k in _KEYWORDS.get("anaforico", []))
-    _KW_CORRECCION_N     = frozenset(_normalizar(k) for k in _KEYWORDS.get("correccion", []))
-    _KW_ACCION_RESULTADO_N = frozenset(_normalizar(k) for k in _KEYWORDS.get("accion_resultado", []))
-    _KW_MCP_N = frozenset(["usando mcp", "via mcp", "con mcp", "model context protocol", "mcp"])
-    print("🔄 [PLANNER]: keywords_config.json recargado.")
-
-
-# ══════════════════════════════════════════════════════════════════════
-# NODO: PLANNER (Tool Planning)
-# ══════════════════════════════════════════════════════════════════════
-
-def _detectar_intent_keywords(orden_lower: str) -> str | None:
-    o = _normalizar(orden_lower)
-
-    def _match_palabra(keywords: frozenset[str]) -> bool:
-        return any(
-            re.search(rf"\b{re.escape(x)}\b", o) if " " not in x else x in o
-            for x in keywords
-        )
-
-    # PRIORIDAD MÁXIMA: preguntas sobre el hardware/estado real del equipo
-    # (disco, RAM, CPU, caché) van a shell, nunca a web -- ver docstring de
-    # _parece_consulta_sistema_local.
-    if _parece_consulta_sistema_local(orden_lower):
-        return "shell"
-
-    if _match_palabra(_KW_MEMORY_N):
-        return "memory"
-    # La acción explícita sobre la interfaz tiene prioridad sobre "vision":
-    # mirar la pantalla no debe interceptar un pedido de click o escritura.
-    if _match_palabra(_KW_COMPUTER_USE_N):
-        return "computer_use"
-    if _match_palabra(_KW_VISION_N) and not _match_palabra(_KW_WEB_N):
-        return "vision"
-    if _match_palabra(_KW_LAUNCH_N) and not _match_palabra(_KW_LAUNCH_EXCLUYE_N):
-        return "launch"
-    if _match_palabra(_KW_WEB_N):
-        return "web"
-    if _KW_CODIGO.search(o):
-        return "codigo"
-    return None
-
-
-def _clasificar_intent_llm(orden: str, mem: dict) -> str:
-    """Nombre estable del clasificador LLM, también útil para tests y plugins."""
-    return _decidir_intencion_con_razonamiento(orden, mem)
-
-
 def _es_charla_simple(orden: str) -> bool:
     """Evita una inferencia de planificación para saludos inequívocos."""
     texto = _normalizar(orden).strip(" !?.¿¡,;")
@@ -630,110 +370,6 @@ def _es_charla_simple(orden: str) -> bool:
         "hola", "buenas", "buen dia", "buenos dias", "buenas tardes",
         "buenas noches", "como estas", "gracias", "ok",
     }
-
-
-def _mcp_es_preferido_para_objetivo(orden: str, manager) -> bool:
-    """Indica si MCP es el medio preferido para cumplir el objetivo.
-
-    No depende de que una keyword genérica (por ejemplo ``busca``) gane antes.
-    MCP se prioriza cuando el usuario lo pidió expresamente o cuando menciona
-    una fuente que el catálogo conectado puede resolver de forma nativa.
-    """
-    texto = _normalizar(orden)
-    if any(kw in texto for kw in _KW_MCP_N):
-        return True
-
-    try:
-        catalogo = manager.list_all_tools()
-    except Exception:
-        return False
-    if not isinstance(catalogo, dict):
-        return False
-
-    pistas_por_server = {
-        "github": ("github", "repositorio", "repos", "pull request", "issue"),
-        "notion": ("notion", "nota", "notas", "pagina"),
-        "server_filesystem": ("directorio", "directorios", "archivos locales", "sistema de archivos"),
-    }
-    for server, pistas in pistas_por_server.items():
-        if catalogo.get(server) and any(pista in texto for pista in pistas):
-            return True
-    return False
-
-
-def _orden_parece_objetivo_mcp(orden: str) -> bool:
-    """Filtro sin I/O: evita iniciar servidores MCP para una charla normal."""
-    texto = _normalizar(orden)
-    return any(kw in texto for kw in _KW_MCP_N) or any(
-        pista in texto for pista in (
-            "github", "repositorio", "repos", "pull request", "issue",
-            "notion", "archivos locales", "sistema de archivos",
-        )
-    )
-
-
-def _plan_mcp_para_objetivo(orden: str, manager) -> list[dict] | None:
-    """Construye el plan MCP mínimo para un objetivo, sin inventar servidores."""
-    args = _inferir_args_mcp(orden, manager)
-    if not args.get("server") or not args.get("name"):
-        return None
-    return [{"tool": "mcp", "instruccion": orden, "args": args}]
-
-
-_CONECTORES_MULTITOOL = (
-    " y luego", " luego", " después", " despues", " entonces",
-    " y guarda", " y guárdalo", " y guardalo", " y crea", " y escribe", ";",
-)
-_KW_PERSISTENCIA = (
-    "guarda", "guárdalo", "guardalo", "guardar", "archivo", "escribe en",
-    "crea un archivo", "guárdala", "guardala",
-)
-
-
-def _parece_multitool(orden_lower: str) -> bool:
-    """
-    Heurística determinista para decidir si vale la pena pedirle al LLM un
-    plan multi-tool.
-
-    Dos caminos:
-    1. Conector explícito ("y luego", ";", etc.) + 2 categorías de keywords
-       distintas — el camino original.
-    2. Web/código + una categoría nueva, "acción sobre el resultado"
-       (arregla, soluciona, instala, aplica el fix, etc.), SIN exigir un
-       conector explícito. Pedidos reales como "buscá cómo arreglar X e
-       instalalo" no traen un " y luego" literal — el encadenamiento está
-       implícito en el verbo de acción, no en una conjunción. Sin este
-       camino, _parece_multitool nunca daba True para el patrón "buscar un
-       fix y aplicarlo", y el planner nunca le pegáa al LLM por un plan
-       multi-paso: se quedaba en un solo paso 'web' que nunca ejecuta nada.
-    """
-    o = _normalizar(orden_lower)
-
-    categorias = 0
-    if any(x in o for x in _KW_WEB_N):
-        categorias += 1
-    if any(x in o for x in _KW_LAUNCH_N):
-        categorias += 1
-    if any(x in o for x in _KW_VISION_N):
-        categorias += 1
-    if _KW_CODIGO.search(o):
-        categorias += 1
-    if any(_normalizar(p) in o for p in _KW_PERSISTENCIA):
-        categorias += 1
-
-    tiene_accion_resultado = any(x in o for x in _KW_ACCION_RESULTADO_N)
-    if tiene_accion_resultado:
-        categorias += 1
-
-    # Camino 2: web/código + acción-sobre-resultado alcanza sin conector.
-    if tiene_accion_resultado and categorias >= 2:
-        return True
-
-    # Camino 1 (original): requiere conector explícito.
-    tiene_conector = any(_normalizar(c) in o for c in _CONECTORES_MULTITOOL)
-    if not tiene_conector:
-        return False
-    return categorias >= 2
 
 
 def _extraer_json_objeto(texto: str):
@@ -774,175 +410,6 @@ def _extraer_json_objeto(texto: str):
                     return None
     return None
 
-def obtener_catalogo_mcp_condensado(manager) -> str:
-    """
-    Consume manager.list_all_tools() y devuelve un string compacto
-    con el catálogo de herramientas MCP disponibles para el planner.
-    """
-    try:
-        catalogo = manager.list_all_tools()  # dict[str, list[dict]]
-    except Exception as e:
-        return f"Error al cargar catálogo MCP: {str(e)}"
-    
-    if not catalogo:
-        return "No hay servidores o herramientas MCP activas en este momento."
-    
-    lineas = []
-    for server, tools in catalogo.items():
-        if not tools:
-            continue
-        for t in tools:
-            name = t.get("name", "unknown")
-            desc = t.get("description", "Sin descripción").replace("\n", " ")
-            desc_corta = desc if len(desc) < 120 else desc[:117] + "..."
-            schema = t.get("input_schema", {})
-            required_args = schema.get("required", [])
-            args_str = f" (Req: {', '.join(required_args)})" if required_args else ""
-            lineas.append(f"- Server '{server}': herramienta '{name}' -> {desc_corta}{args_str}")
-    
-    if not lineas:
-        return "No hay servidores o herramientas MCP activas en este momento."
-    
-    return "\n".join(lineas)
-
-def _normalizar_args_mcp(server: str, name: str, arguments: dict, orden: str) -> dict:
-    """
-    Normaliza argumentos para tools MCP conocidas cuya API tiene
-    sintaxis propia que un LLM genérico no maneja bien.
-    Corre SIEMPRE (venga del LLM o del fallback) para evitar
-    que basten "argumentos parseables" pero semánticamente inútiles.
-
-    La lógica por-server vive en core/connectors/<server>.py (no acá).
-    Agregar un conector nuevo NO requiere tocar esta función.
-    """
-    from core.connectors import normalize_args
-    return normalize_args(server, name, arguments, orden)
-
-
-def _planner_llm(orden: str, mem: dict) -> list[dict] | None:
-    """
-    Pide al LLM un plan multi-tool. Retorna lista de pasos normalizados
-    al contrato {"tool","instruccion","args"} o None si falla.
-    """
-    import json
-    # No levantar/conectar todos los servidores para una tarea que no tiene
-    # ninguna pista MCP. Para objetivos MCP el catálogo sí entra al prompt.
-    mcp_catalog = "No se consultó catálogo MCP para este objetivo."
-    if _orden_parece_objetivo_mcp(orden):
-        from core.tools.mcp_client import get_mcp_manager
-        mcp_catalog = obtener_catalogo_mcp_condensado(get_mcp_manager())
-    
-    prompt = f"""Analiza si esta tarea requiere VARIAS herramientas encadenadas.
-Herramientas disponibles:
-web: búsqueda en internet
-shell: ejecutar comandos de sistema (NO usar para guardar archivos, NI para listar o leer directorios/archivos si hay un servidor MCP disponible para ello)
-launch: abrir aplicaciones
-vision: capturar/analizar pantalla
-codigo: generar código, guardarlo en un archivo si el usuario da un nombre/ruta (main.py, script.sh...), y ejecutarlo
-file_write: guardar el resultado del paso anterior en un archivo (usar SIEMPRE que el usuario pida guardar/escribir en archivo)
-mcp: invocar herramientas externas. IMPORTANTE: Si necesitas usar cualquiera de las herramientas MCP listadas abajo, DEBES poner en el campo tool la palabra exacta "mcp" (NO el nombre del servidor) y estructurar los args de esta manera exacta: {{"server": "nombre_del_servidor", "name": "nombre_de_la_tool", "arguments": {{...}}}}
-Servidores y herramientas MCP activas actualmente:
-{mcp_catalog}
-text: respuesta directa
-IMPORTANTE: Para guardar resultados en archivo usa SIEMPRE "file_write", NUNCA "shell" con echo/tee.
-Si existe incertidumbre técnica, un dato posiblemente desactualizado o una solución que debas confirmar, elegí primero "web" y luego aplicá/verificá el resultado si la tarea lo pide.
-El nodo file_write toma automáticamente el resultado del paso anterior, no necesitas especificar el contenido.
-IMPORTANTE: Si la tarea es "buscar cómo resolver/arreglar/instalar algo Y HACERLO" (el usuario espera que lo ejecutes, no solo que le cuentes qué encontraste), armá un plan de VARIOS pasos: primero "web" para buscar la solución, después "shell" o "codigo" para aplicarla. NO te quedes en un solo paso "web" cuando la tarea pide explícita o implícitamente una acción sobre lo encontrado.
-IMPORTANTE: Dos pedidos separados unidos por "y", "y luego", "después", etc. SIEMPRE son multi_tool=true, AUNQUE las dos acciones sean independientes entre sí y no compartan datos (ej: "ejecuta X y buscame Y" = un paso launch para X + un paso web para Y, cada uno con su propia instrucción). No asumas que multi-tool requiere que el segundo paso use el resultado del primero.
-Tarea: {orden}
-Si necesita UNA sola herramienta, responde: {{"multi_tool": false}}
-Si necesita VARIAS en secuencia, responde EXACTAMENTE este formato:
-Ejemplo 1 (buscar + guardar):
-{{
- "multi_tool ": true,
- "pasos ": [
-{{ "tool ":  "web ",  "instruccion ":  "buscar el precio de X ",  "args ": {{ "query ":  "precio X "}}}},
-{{ "tool ":  "file_write ",  "instruccion ":  "guardar el resultado en un archivo ",  "args ": {{ "filename ":  "precio_x.txt "}}}}
-]
-}}
-Ejemplo 2 (buscar un fix + ejecutarlo — usar este patrón cuando el usuario pide arreglar/solucionar/instalar algo):
-{{
- "multi_tool": true,
- "pasos": [
-{{ "tool": "web", "instruccion": "buscar cómo resolver el error X", "args": {{ "query": "error X fix" }} }},
-{{ "tool": "shell", "instruccion": "ejecutar el comando encontrado que resuelve el error X", "args": {{}} }}
-]
-}}
-Ejemplo 3 (dos acciones independientes encadenadas — usar este patrón cuando el usuario pide dos cosas separadas sin relación de datos entre sí, ej: "ejecuta X y buscame Y", "abrí X y después buscá Z"):
-{{
- "multi_tool": true,
- "pasos": [
-{{ "tool": "launch", "instruccion": "abrir/ejecutar la aplicación X", "args": {{ "app": "X" }} }},
-{{ "tool": "web", "instruccion": "buscar Y en internet", "args": {{ "query": "Y" }} }}
-]
-}}
-Responde SOLO el JSON, sin explicaciones."""
-
-    raw = ""
-    try:
-        try:
-            raw = _llm_chat(system=_system_prompt(mem), user=prompt, min_predict=_num_predict_planner()).strip()
-        except TypeError as exc:
-            # Compatibilidad con adaptadores y tests que todavía exponen la
-            # firma previa de _llm_chat sin ``min_predict``.
-            if "min_predict" not in str(exc):
-                raise
-            raw = _llm_chat(system=_system_prompt(mem), user=prompt).strip()
-    except Exception as e:
-        print(f"   └─ [PLANNER]: fallo al invocar al LLM ({e})")
-        return None
-
-    # Always clean <think> (Ornith reasoning) before trying to parse structured output.
-    _, contenido = _parse_ornith_thinking(raw)
-
-    if "```json" in contenido:
-        contenido = contenido.split("```json", 1)[1].split("```", 1)[0].strip()
-    elif "```" in contenido:
-        contenido = contenido.split("```", 1)[1].split("```", 1)[0].strip()
-
-    data = None
-    try:
-        data = json.loads(contenido)
-    except Exception:
-        data = _extraer_json_objeto(contenido)
-
-    if data is None:
-        preview = raw[:300].replace("\n", " ") if raw else "<vacío>"
-        print(
-            "   └─ [PLANNER]: la respuesta del LLM no es JSON válido. "
-            f"Contenido recibido (truncado): {preview!r}"
-        )
-        return None
-
-    if not isinstance(data, dict):
-        print(f"   └─ [PLANNER]: el JSON del LLM no es un objeto (tipo {type(data).__name__}).")
-        return None
-
-    if not data.get("multi_tool") or not isinstance(data.get("pasos"), list):
-        print(
-            "   └─ [PLANNER]: el LLM decidió multi_tool=false (o sin 'pasos' válido) para "
-            f"una orden que la heurística marcó como multi-tool. JSON recibido: {data!r}"
-        )
-        return None
-
-    pasos_norm: list[dict] = []
-    for paso in data["pasos"]:
-        if not isinstance(paso, dict):
-            continue
-        args = paso.get("args") if isinstance(paso.get("args"), dict) else {}
-        instruccion = paso.get("instruccion")
-        if not (isinstance(instruccion, str) and instruccion.strip()):
-            instruccion = (
-                args.get("query") or args.get("command") or args.get("app") or orden
-            )
-        pasos_norm.append({
-            "tool": paso.get("tool"),
-            "instruccion": instruccion,
-            "args": args,
-        })
-
-    return pasos_norm or None
-
 
 def _posible_referencia_anaforica(orden_lower: str) -> bool:
     """
@@ -969,11 +436,6 @@ def _posible_referencia_anaforica(orden_lower: str) -> bool:
         re.search(rf"\b{re.escape(x)}\b", o) if " " not in x else x in o
         for x in _KW_ANAFORICO_N
     )
-
-
-def _es_referencia_anaforica(orden_lower: str) -> bool:
-    """Alias de compatibilidad hacia atrás para _posible_referencia_anaforica."""
-    return _posible_referencia_anaforica(orden_lower)
 
 
 def _confirmar_referencia_anaforica_llm(orden: str) -> bool:
@@ -1294,116 +756,6 @@ def _plan_activado(plan: list[dict], orden: str, mem: dict | None = None) -> dic
     return update
 
 
-def _decidir_intencion_con_razonamiento(orden: str, mem: dict) -> str:
-    from core.tools.mcp_client import get_mcp_manager
-    from core.agent.graph_nodes import obtener_catalogo_mcp_condensado
-
-    manager = get_mcp_manager()
-    mcp_catalog = obtener_catalogo_mcp_condensado(manager)
-    mcp_info = f"\n\nMCP disponibles:\n{mcp_catalog}" if mcp_catalog and "No hay servidores" not in mcp_catalog else ""
-    
-    """
-    Nueva filosofía: la detección de intención SIEMPRE pasa por el
-    razonamiento del modelo (Ornith).
-    """
-    from core.agent.tool_registry import TOOLS_VALIDAS
-    
-    # DETECCIÓN PRIORITARIA: Si el usuario menciona MCP explícitamente
-    # Y ADEMÁS hay un verbo de acción -> es una orden real, no solo un
-    # comentario/mención casual (ej: "che, la integración de Model Context
-    # Protocol quedó buenísima" NO debe forzar intent=mcp).
-    orden_lower = orden.lower()
-    orden_norm = _normalizar(orden_lower)
-    _VERBOS_ACCION_MCP = (
-        "busca", "buscá", "buscame", "buscar", "lista", "listame", "listar",
-        "mostrame", "mostrar", "muestra", "trae", "traeme", "traer",
-        "ejecuta", "ejecutá", "ejecutar", "usa", "usá", "usar",
-        "consulta", "consultá", "consultar", "revisa", "revisá", "revisar",
-        "dame", "abrí", "abre", "corre", "corré", "invoca", "invocá",
-    )
-    tiene_verbo_accion = any(v in orden_norm for v in _VERBOS_ACCION_MCP)
-    if tiene_verbo_accion and any(kw in orden_norm for kw in _KW_MCP_N):
-        print("   └─ [PLANNER]: MCP solicitado explícitamente por el usuario")
-        return "mcp"
-
-    # DETECCIÓN DETERMINISTA: menciones de servers MCP conocidos
-    # (github, repos, notion, filesystem) con verbo de acción NO deberían
-    # depender de que el LLM razone bien ni de que el usuario diga "mcp"
-    # literalmente. Si el usuario dice "repo"/"github", quiere el server
-    # real de GitHub, no un web-search genérico.
-    _KW_SERVERS_MCP = ("github", "repositorio", "repositorios", "repo", "repos", "notion")
-    if tiene_verbo_accion and any(kw in orden_norm for kw in _KW_SERVERS_MCP):
-        print("   └─ [PLANNER]: Mención de server MCP conocido (github/notion) → forzando intent=mcp")
-        return "mcp"
-
-    system = (
-        "Eres un analizador de intenciones muy preciso. Tu trabajo es "
-        "razonar sobre qué necesita realmente el usuario y decidir la "
-        "herramienta más adecuada (o si es solo charla). "
-        "Prioriza 'launch' cuando el usuario quiere abrir, ejecutar, lanzar o jugar una aplicación, juego o programa (incluyendo Flatpaks como Sober, Roblox, Firefox, etc.). "
-        "Usa 'shell' solo para comandos de terminal, archivos, procesos, etc. "
-        "Usa 'launch' para apps gráficas y programas instalados. "
-        "Usa 'vision' SOLO cuando el usuario quiere que Aether MIRE/DESCRIBA la pantalla, sin actuar. "
-        "Usa 'computer_use' cuando el usuario quiere que Aether ACTÚE sobre la pantalla (click, escribir, navegar, completar formularios) de forma autónoma. "
-        "Usa 'mcp' cuando el usuario pida explícitamente usar MCP o Model Context Protocol."
-    )
-    user = f"""Orden del usuario: "{orden}"
-Herramientas disponibles:
-web: buscar información actual (precios, noticias, versiones, clima)
-shell: comandos de sistema (ls, pip cache, df, procesos, archivos)
-launch: abrir/ejecutar/lanzar programas, aplicaciones, juegos (Flatpak o PATH). Ej: "ejecuta sober", "abre firefox", "quiero jugar roblox", "lanza el programa"
-vision: capturar y describir la pantalla (SOLO mirar, no actuar)
-computer_use: controlar el mouse/teclado sobre lo que se ve en pantalla (click, escribir, navegar, completar formularios) hasta cumplir un objetivo
-codigo: escribir código nuevo en un archivo (si el usuario menciona un nombre/ruta como main.py, se crea ahí) y ejecutarlo
-memory: recordar o gestionar datos del usuario
-mcp: invocar herramientas externas vía Model Context Protocol — esto incluye CUALQUIER pedido sobre repositorios/repos/GitHub (buscar, listar, consultar repos), páginas o notas de Notion, o archivos/directorios reales del sistema cuando se pide explícitamente por MCP
-text: charla normal, conversación, conocimiento general
-Piensa paso a paso (razonamiento detallado) sobre la orden.
-Al final de tu razonamiento, responde exactamente con una línea:
-TOOL: launch
-TOOL: shell
-TOOL: web
-TOOL: text
-TOOL: vision
-TOOL: computer_use
-TOOL: codigo
-TOOL: memory
-TOOL: mcp
-Ejemplos:
-"ejecuta sober" o "quiero jugar" → launch (es un programa Flatpak)
-"lista archivos" → shell
-"busca versión de python" → web
-"hola" → text
-"abre firefox" → launch
-"qué ves en pantalla" → vision
-"hace click en el botón de guardar" → computer_use
-"completá el formulario de login" → computer_use
-"listame directorios usando MCP" → mcp
-"buscame los repos más famosos de rust en github" → mcp (es GitHub, no búsqueda web genérica)
-"cuáles son mis notas de notion sobre X" → mcp
-Tu razonamiento:"""
-    try:
-         raw = _llm_chat(system=system, user=user, min_predict=_num_predict_planner()).strip()
-    except Exception as e:
-        print(f"   └─ [PLANNER]: razonamiento de intención falló ({e}); usando 'text'.")
-        return "text"
-    # Buscamos la línea TOOL: xxx
-    # FIX: la clase de caracteres incluye "_" para poder capturar nombres de
-    # tool compuestos como "computer_use" (antes [a-z]+ cortaba en el guión
-    # bajo, "computer_use" quedaba como "computer", nunca matcheaba contra
-    # TOOLS_VALIDAS y el intent terminaba cayendo siempre a "text").
-    match = re.search(r"TOOL:\s*([a-z_]+)", raw, re.IGNORECASE)
-    if match:
-        tool = match.group(1).lower()
-        if tool in TOOLS_VALIDAS or tool == "mcp":
-            return tool
-    # Fallback: última palabra válida
-    for palabra in re.findall(r"[a-z_]+", raw.lower())[::-1]:
-        if palabra in TOOLS_VALIDAS or palabra == "mcp":
-            return palabra
-    return "text"
-
-
 def node_planner(state: AetherState) -> dict:
     """
     ÚNICA puerta de decisión del grafo.
@@ -1412,8 +764,6 @@ def node_planner(state: AetherState) -> dict:
     razonamiento explícito del modelo (Ornith). No dependemos
     principalmente de keywords frágiles.
     """
-    from core.agent.tool_registry import validar_plan
-
     orden = state["orden"]
     orden_lower = orden.lower()
     mem = normalizar_mem(state.get("mem"))
@@ -1596,106 +946,6 @@ def node_planner(state: AetherState) -> dict:
     # agent loop esté validado en uso real.
     print("   └─ Sin atajo determinista aplicable → agent loop (razonamiento + tool calling nativo).")
     return _agent_loop_activado(orden, mem)
-
-    # ═══════════════════════════════════════════════════════════════════
-    # DETECCIÓN DE INTENCIÓN
-    # ══════════════════════════════════════════════════════════════════
-    # Las intenciones inequívocas no necesitan una inferencia adicional. Esto
-    # también mantiene el planner operativo si Ollama aún está iniciando.
-    intent = _detectar_intent_keywords(orden_lower)
-    if intent:
-        print(f"   └─ Intención detectada por keywords: {intent}")
-    else:
-        intent = _clasificar_intent_llm(orden, mem)
-    multi = _parece_multitool(orden_lower)
-
-    # MCP debe competir por capacidad, antes de que una keyword genérica
-    # ("buscá", "lista", "nota") fuerce web/shell. Así "buscá mis issues
-    # de GitHub" y "usando MCP ..." toman la fuente conectada real.
-    manager_mcp = None
-    if _orden_parece_objetivo_mcp(orden):
-        from core.tools.mcp_client import get_mcp_manager
-        manager_mcp = get_mcp_manager()
-    if manager_mcp is not None and _mcp_es_preferido_para_objetivo(orden, manager_mcp):
-        plan_mcp = _plan_mcp_para_objetivo(orden, manager_mcp)
-        if plan_mcp:
-            _KW_PERSISTENCIA_N = frozenset(_normalizar(p) for p in _KW_PERSISTENCIA)
-            if any(p in _normalizar(orden_lower) for p in _KW_PERSISTENCIA_N):
-                m_fname = re.search(r'[\w\-]+\.(?:txt|md|json|csv|log)', orden)
-                filename = m_fname.group(0) if m_fname else "resultado_mcp.txt"
-                plan_mcp.append({
-                    "tool": "file_write",
-                    "instruccion": f"guardar resultado en {filename}",
-                    "args": {"filename": filename},
-                })
-            print(f"   └─ Objetivo resuelto con MCP: {plan_mcp[0]['args']['server']}:{plan_mcp[0]['args']['name']}")
-            return _plan_activado(plan_mcp, orden, mem)
-        if any(kw in _normalizar(orden) for kw in _KW_MCP_N):
-            # No reemplazar silenciosamente una petición explícita de MCP por
-            # web/shell: node_mcp devolverá un diagnóstico claro y accionable.
-            return _plan_activado([{"tool": "mcp", "instruccion": orden, "args": {}}], orden, mem)
-
-    # CASO ESPECIAL: MCP con inferencia de args
-    if intent == "mcp" and not multi:
-        print(f"   └─ Intención decidida por razonamiento del modelo: {intent}")
-        if manager_mcp is None:
-            from core.tools.mcp_client import get_mcp_manager
-            manager_mcp = get_mcp_manager()
-        args_mcp = _inferir_args_mcp(orden, manager_mcp)
-        print(f"   └─ Args MCP inferidos: {args_mcp}")
-        return _plan_activado(
-            [{"tool": "mcp", "instruccion": orden, "args": args_mcp}],
-            orden, mem
-        )
-
-    # CASO GENERAL: single-tool
-    if intent and not multi:
-        print(f"   └─ Intención decidida por razonamiento del modelo: {intent}")
-        return _plan_activado([{"tool": intent, "instruccion": orden}], orden, mem)
-
-    # ═══════════════════════════════════════════════════════════════════
-    # CASO MULTI-TOOL: planner LLM
-    # ═══════════════════════════════════════════════════════════════════
-    if multi:
-        print("   └─ Posible multi-tool según heurística, consultando LLM para el plan...")
-        try:
-            plan_llm = _planner_llm(orden, mem)
-            if plan_llm:
-                ok, errores = validar_plan(plan_llm)
-                if ok:
-                    print(f"   └─ Plan multi-tool válido: {len(plan_llm)} pasos")
-                    return _plan_activado(plan_llm, orden, mem)
-                print(f"   └─ Plan del LLM inválido: {errores}. Usando razonamiento simple.")
-        except Exception as e:
-            print(f"   └─ Error en plan multi-tool ({e}).")
-
-    # Si el modelo no pudo proponer un plan válido, conservar un fallback
-    # determinista para la persistencia en vez de abandonar el objetivo.
-    _KW_PERSISTENCIA_N = frozenset(_normalizar(p) for p in _KW_PERSISTENCIA)
-    tiene_persistencia = any(p in _normalizar(orden_lower) for p in _KW_PERSISTENCIA_N)
-    if multi and tiene_persistencia and intent in ("web", "vision", "codigo"):
-        m_fname = re.search(r'[\w\-]+\.(?:txt|md|json|csv|py|sh|html)', orden)
-        filename = m_fname.group(0) if m_fname else f"{intent}_resultado.txt"
-        plan_det = [
-            {"tool": intent, "instruccion": orden, "args": {}},
-            {"tool": "file_write", "instruccion": f"guardar resultado en {filename}", "args": {"filename": filename}},
-        ]
-        print(f"   └─ Plan de respaldo para persistir: {intent} → file_write")
-        return _plan_activado(plan_det, orden, mem)
-
-    # ═══════════════════════════════════════════════════════════════════
-    # FALLBACK
-    # ═══════════════════════════════════════════════════════════════════
-    print("   └─ Decisión final por razonamiento del modelo...")
-    # Si ya hay una intención determinista no volvemos a gastar otra
-    # inferencia (ni dejamos al agente bloqueado si el modelo está frío).
-    tool_fallback = intent or _clasificar_intent_llm(orden, mem)
-    print(f"   └─ Plan de 1 paso (razonamiento): tool={tool_fallback}")
-    return _plan_activado([{"tool": tool_fallback, "instruccion": orden}], orden, mem)
-
-# ══════════════════════════════════════════════════════════════════════
-# NODO: ROUTER (DEPRECADO — conservado por compatibilidad)
-# ══════════════════════════════════════════════════════════════════════
 
 def _agent_loop_activado(orden: str, mem: dict) -> dict:
     """Prepara el estado para arrancar (o continuar) el agent loop."""
@@ -1916,33 +1166,6 @@ def node_agent_loop(state: AetherState) -> dict:
         "agent_pasos_log": agent_pasos_log,
         "agent_activo":    True,
         "done":            False,
-    }
-
-
-def node_router(state: AetherState) -> dict:
-    """[DEPRECADO] Ya NO está cableado en el grafo. Usa node_planner."""
-    orden = state["orden"].lower()
-    intent = _detectar_intent_keywords(orden)
-
-    if intent is None:
-        clasificacion = _llm_chat(
-            system="Eres un clasificador de intenciones. Responde SOLO con una palabra en minúsculas.",
-            user=(
-                f"Clasifica esta orden del usuario en UNA de estas categorías:\n"
-                f"- web, shell, launch, vision, codigo, memory, text\n\n"
-                f"Orden: {state['orden']}\n\n"
-                f"Categoría:"
-            )
-        ).strip().lower()
-        intent = clasificacion if clasificacion in ["web", "shell", "launch", "vision", "codigo", "memory", "text"] else "text"
-
-    return {
-        "intent":        intent,
-        "error_activo":  False,
-        "error_intento": state.get("error_intento", 0),
-        "messages":      [HumanMessage(content=state["orden"])],
-        "plan_activo":   False,
-        "plan_index":    0,
     }
 
 
@@ -2716,20 +1939,6 @@ def _resolver_con_which(nombre: str) -> str | None:
     return None
 
 
-def _buscar_flatpak_rapido(terminos: list[str]) -> str | None:
-    """Compatibilidad. Usa la lógica nueva basada en nombre."""
-    if not terminos:
-        return None
-    # Tomamos el token más probable como nombre de programa
-    for t in reversed(terminos):
-        if len(t) > 2 and t not in {"flatpak", "mediante"}:
-            res = _buscar_flatpak_por_nombre(t)
-            if res:
-                return res
-    # último intento con el primero
-    return _buscar_flatpak_por_nombre(terminos[0]) if terminos else None
-
-
 def _buscar_en_path(terminos: list[str]) -> str | None:
     """Busca ejecutables en PATH y sistema de forma más amplia (flatpak o nativo).
     Ignora términos meta como 'flatpak'.
@@ -3274,9 +2483,53 @@ def _resumir_log_computer_use(log_pasos: list[dict], se_completo: bool) -> str:
         else:
             desc = a["accion"]
         estado = "ERROR" if p.get("error") else "OK"
-        lineas.append(f"  {p['paso'] + 1}. {desc} [{estado}]")
+        detalle = f": {p['resultado']}" if p.get("resultado") else ""
+        lineas.append(f"  {p['paso'] + 1}. {desc} [{estado}]{detalle}")
     encabezado = "Objetivo cumplido." if se_completo else "Loop cortado (límite de pasos o error)."
     return encabezado + "\n" + "\n".join(lineas)
+
+
+def _acciones_deterministas_computer_use(orden: str) -> list[dict] | None:
+    """Extrae acciones explícitas que no requieren percepción visual."""
+    texto = orden.lower()
+    workspace = re.search(r"\b(?:workspace|espacio de trabajo)\s+([a-z0-9_-]+)\b", texto)
+    if workspace and any(verbo in texto for verbo in ("cambi", "pasá", "pasa", "ir a", "anda")):
+        return [{"accion": "workspace", "workspace": workspace.group(1)}]
+
+    match = re.search(
+        r"\b(?:mover|mové|llevar|llevá)\s+(?:el\s+)?(?:mouse|cursor)"
+        r"\s+(?:a|hasta)\s*(?:\(\s*)?(\d+)\s*[,x]\s*(\d+)",
+        texto,
+    )
+    if match:
+        return [{"accion": "mover", "x": int(match.group(1)), "y": int(match.group(2))}]
+
+    match = re.search(
+        r"\b(?:click|clic|clickeá|cliqueá)\s+(?:en\s+)?"
+        r"(?:\(\s*)?(\d+)\s*[,x]\s*(\d+)",
+        texto,
+    )
+    if match:
+        return [{"accion": "click", "x": int(match.group(1)), "y": int(match.group(2))}]
+
+    window = re.search(r"\b(?:enfocá|enfoca|focus)\s+(?:la\s+)?ventana\s+(0x[0-9a-f]+)\b", texto)
+    if window:
+        return [{"accion": "enfocar_ventana", "window_id": window.group(1)}]
+    return None
+
+
+def _ejecutar_accion_computer_use(accion: dict) -> tuple[str, bool]:
+    if accion["accion"] == "workspace":
+        return cambiar_workspace(accion["workspace"])
+    if accion["accion"] == "enfocar_ventana":
+        return enfocar_ventana(accion["window_id"])
+    if accion["accion"] == "click":
+        return click_en(accion["x"], accion["y"])
+    if accion["accion"] == "mover":
+        return mover_mouse(accion["x"], accion["y"])
+    if accion["accion"] == "escribir":
+        return escribir_texto(accion["texto"])
+    return f"Acción determinista desconocida: {accion['accion']}", True
 
 
 def node_computer_use(state: AetherState) -> dict:
@@ -3294,6 +2547,50 @@ def node_computer_use(state: AetherState) -> dict:
     se_completo = False
 
     print(f"\n🖱️  [COMPUTER USE]: iniciando loop percepción-acción (máx. {MAX_STEPS_COMPUTER_USE} pasos)")
+    try:
+        contexto_inicial = iniciar_secuencia()
+        print(
+            "   └─ [COMPUTER USE]: contexto "
+            f"monitor={contexto_inicial.monitor!r}, workspace={contexto_inicial.workspace!r}, "
+            f"foco={contexto_inicial.focused_window!r}"
+        )
+    except RuntimeError as exc:
+        msg = str(exc)
+        return {
+            "computer_use_log": [],
+            "computer_use_result": f"No se pudo resolver el contexto del escritorio: {msg}",
+            "error_activo": True,
+            "error_mensaje": msg,
+            "error_contexto": "computer_use",
+        }
+
+    deterministic_actions = _acciones_deterministas_computer_use(orden)
+    if deterministic_actions:
+        for paso_n, accion in enumerate(deterministic_actions):
+            started = time.perf_counter()
+            resultado, err = _ejecutar_accion_computer_use(accion)
+            duration_ms = round((time.perf_counter() - started) * 1000, 2)
+            log_pasos.append({
+                "paso": paso_n,
+                "accion": accion,
+                "resultado": resultado,
+                "error": err,
+                "duracion_ms": duration_ms,
+                "decision": "determinista",
+            })
+            print(
+                f"   └─ [COMPUTER USE]: acción determinista "
+                f"{accion['accion']} en {duration_ms} ms"
+            )
+            if err:
+                break
+            se_completo = True
+        return {
+            "computer_use_log": log_pasos,
+            "computer_use_result": _resumir_log_computer_use(log_pasos, se_completo),
+            "final_response": None,
+            "messages": [HumanMessage(content=orden)],
+        }
 
     for paso_n in range(MAX_STEPS_COMPUTER_USE):
         pregunta = (
@@ -3330,19 +2627,20 @@ def node_computer_use(state: AetherState) -> dict:
             se_completo = True
             break
 
-        if accion["accion"] == "click":
-            print(f"   └─ 🖱️  [COMPUTER USE]: paso {paso_n + 1} -- click en ({accion['x']}, {accion['y']})")
-            _, err = click_en(accion["x"], accion["y"])
-        elif accion["accion"] == "mover":
-            print(f"   └─ 🖱️  [COMPUTER USE]: paso {paso_n + 1} -- moviendo cursor a ({accion['x']}, {accion['y']})")
-            _, err = mover_mouse(accion["x"], accion["y"])
-        else:
-            print(f"   └─ ⌨️  [COMPUTER USE]: paso {paso_n + 1} -- escribiendo texto")
-            _, err = escribir_texto(accion["texto"])
+        started = time.perf_counter()
+        resultado, err = _ejecutar_accion_computer_use(accion)
+        duration_ms = round((time.perf_counter() - started) * 1000, 2)
 
-        log_pasos.append({"paso": paso_n, "accion": accion, "error": err})
+        log_pasos.append({
+            "paso": paso_n,
+            "accion": accion,
+            "resultado": resultado,
+            "error": err,
+            "duracion_ms": duration_ms,
+            "decision": "vlm",
+        })
         if err:
-            print(f"   └─ ❌ [COMPUTER USE]: falló la acción (¿ydotoold corriendo?), cortando loop.")
+            print(f"   └─ ❌ [COMPUTER USE]: {resultado}")
             break
     else:
         print(f"   └─ ⚠️  [COMPUTER USE]: límite de {MAX_STEPS_COMPUTER_USE} pasos alcanzado sin confirmar objetivo.")

@@ -2,8 +2,6 @@ from typing import Any
 from typing_extensions import TypedDict
 from langchain_core.messages import BaseMessage
 
-IntentType = str
-
 MAX_INTENTOS_DEFAULT = 3
 
 MAX_INTENTOS_POR_CONTEXTO = {
@@ -19,11 +17,7 @@ class AetherState(TypedDict):
     modo_autonomo:  bool
 
     # ── Control de flujo ─────────────────────────────────────────────
-    intent:         str           # detectado por node_router
     done:           bool          # True → el grafo debe terminar
-    terminado:      bool          # alias legacy (no usar en nodos nuevos)
-    tokens:         list          # tokens de streaming acumulados
-    ruta:           str           # ruta de debug
 
     # ── Tool Planning (legacy: fast-paths deterministas de node_planner) ─
     plan_activo:    bool          # True si hay un plan multi-tool en ejecución
@@ -40,7 +34,6 @@ class AetherState(TypedDict):
     messages:       list[BaseMessage]
 
     # ── Respuestas ───────────────────────────────────────────────────
-    respuesta:      str | None    # campo legacy
     llm_response:   str | None    # respuesta cruda del LLM
     final_response: str | None    # respuesta final al usuario
 
@@ -48,7 +41,6 @@ class AetherState(TypedDict):
     shell_command:  str | None    # comando que se ejecutó
     shell_output:   str           # stdout+stderr del comando
     shell_error:    bool          # True si hubo error de ejecución
-    hubo_error:     bool          # alias legacy
 
     # ── Web ──────────────────────────────────────────────────────────
     web_results:    str           # resultados de buscar_web()
@@ -130,11 +122,7 @@ def crear_estado_inicial(orden: str, mem: dict, modo_autonomo: bool = True) -> "
         "modo_autonomo": modo_autonomo,
 
         # ── Control de flujo ─────────────────────────────────────────
-        "intent":        "",
         "done":          False,
-        "terminado":     False,
-        "tokens":        [],
-        "ruta":          "",
 
         # ── Tool Planning ────────────────────────────────────────────
         "plan_activo":     False,
@@ -150,7 +138,6 @@ def crear_estado_inicial(orden: str, mem: dict, modo_autonomo: bool = True) -> "
         "messages":      [],
 
         # ── Respuestas ───────────────────────────────────────────────
-        "respuesta":      None,
         "llm_response":   None,
         "final_response": None,
 
@@ -158,7 +145,6 @@ def crear_estado_inicial(orden: str, mem: dict, modo_autonomo: bool = True) -> "
         "shell_command": None,
         "shell_output":  "",
         "shell_error":   False,
-        "hubo_error":    False,
 
         # ── Web / MCP / Visión / Código ──────────────────────────────
         "web_results":      "",

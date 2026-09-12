@@ -49,6 +49,7 @@ except Exception as e:
 
 print("\n5. MEMORY CONSOLIDATOR KEY PARAMETERS")
 print("-" * 60)
+from core.memory import consolidator
 from core.memory.consolidator import MIN_TURNOS_PARA_CONSOLIDAR, programar_consolidacion, consolidar_resumen
 print(f"  MIN_TURNOS_PARA_CONSOLIDAR: {MIN_TURNOS_PARA_CONSOLIDAR}")
 print(f"  _scheduler_lock exists: {hasattr(consolidator, '_scheduler_lock')}")

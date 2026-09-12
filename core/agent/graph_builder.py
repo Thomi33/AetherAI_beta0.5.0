@@ -118,12 +118,6 @@ def _route_agent_loop(state: AetherState) -> str:
     return "finalize"
 
 
-def _route_after_execution(state: AetherState) -> str:
-    if state.get("error_activo", False):
-        return "error_diagnose"
-    return "finalize"
-
-
 def _route_after_confirm(state: AetherState) -> str:
     if state.get("done", False):
         return END

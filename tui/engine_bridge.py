@@ -31,8 +31,11 @@ import sys
 import queue
 import threading
 import contextlib
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Iterator
+
+import requests
 
 PROJECT_ROOT_HINT = "Ajustá sys.path en run.py, no aquí."
 
@@ -90,6 +93,7 @@ class _MotorState:
 
 
 _motor = _MotorState()
+logger = logging.getLogger(__name__)
 
 
 def inicializar_motor() -> None:
@@ -118,6 +122,40 @@ def inicializar_motor() -> None:
 
     actualizar_flatpaks(_motor.mem, salida_lista="")
     _motor.inicializado = True
+
+
+def calentar_modelo() -> None:
+    """Envía un prompt mínimo para cargar el modelo local de Ollama.
+
+    No crea un turno de conversación ni escribe en la memoria: solo deja el
+    modelo listo para la primera orden real de la TUI.
+    """
+    from core.config.config_manager import get_config_manager
+
+    config = get_config_manager()
+    host = str(config.get("OLLAMA_HOST", "http://localhost:11434")).rstrip("/")
+    model = str(config.get("MODELO", "ornith-1.5:9b"))
+    options = dict(config.get("OLLAMA_GEN_OPTIONS", {}))
+    options.update({"num_ctx": config.get("NUM_CTX", 8192), "num_predict": 1})
+
+    try:
+        response = requests.post(
+            f"{host}/api/generate",
+            json={
+                "model": model,
+                "prompt": "Responde únicamente: READY",
+                "stream": False,
+                "keep_alive": config.get("OLLAMA_KEEP_ALIVE", -1),
+                "options": options,
+            },
+            timeout=120,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        logger.warning("No se pudo calentar Ollama (%s): %s", host, exc)
+        return
+
+    logger.info("Modelo Ollama listo: %s", model)
 
 
 def obtener_historial_para_mostrar(n: int = 50) -> list[dict]:

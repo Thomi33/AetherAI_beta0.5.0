@@ -10,3 +10,4 @@ requests>=2.31
 mcp>=1.0
 textual>=6.0
 rich>=14.0
+opencv-python-headless>=4.10

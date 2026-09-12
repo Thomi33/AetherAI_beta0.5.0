@@ -24,8 +24,18 @@ externos. El modelo corre en tu máquina mediante Ollama.
 
 ### Descargar Aether
 
+<<<<<<< HEAD
 No necesitás instalar manualmente Python, pip, Ollama ni las dependencias de
 Aether antes de empezar. El instalador se encarga de preparar el entorno.
+=======
+- Linux (el instalador está optimizado para Arch Linux).
+- Python 3.10 o superior.
+- [Ollama](https://ollama.com) ejecutándose en `http://localhost:11434`.
+- `zsh` para las herramientas de shell.
+- `ydotool` y `ydotoold` para control de mouse/teclado.
+- `hyprctl` (Hyprland) o `swaymsg` (Sway) para verificación determinista.
+- `grim` solo si vas a usar visión en Hyprland/Wayland.
+>>>>>>> 51ef6cd2 (perf: velocidad absoluta)
 
 Podés descargar el repositorio de dos formas:
 
@@ -196,6 +206,26 @@ la carpeta del repositorio. Por defecto la memoria, notas y logs viven aparte
 en `~/Aether`; si durante el onboarding se elige no usar un home separado,
 viven en `<proyecto>/.aether-data/`.
 
+`computer_use` consulta directamente a Hyprland (`hyprctl`) o Sway
+(`swaymsg`) para resolver monitor, workspace, foco y cursor. Ese contexto se
+cachea durante la secuencia y se invalida solo después de acciones que pueden
+cambiarlo. Las acciones de mouse se reintentan con backoff corto y se verifican
+sin VLM; el diagnóstico visual queda reservado para un fallback explícito.
+Cada acción registra tipo, contexto, resultado y reintentos en el logger de
+`core.tools.computer_control`.
+
+Las órdenes con coordenadas o workspace explícitos usan un fast-path
+determinista y registran `duracion_ms`; no invocan el VLM. Cuando una acción
+requiere visión, `ver_pantalla` admite un recorte `x,y,ancho,alto` para evitar
+capturas mayores a la región relevante. La rama Sway tiene cobertura con mocks
+del formato de `swaymsg`, pero no fue validada en vivo en este entorno.
+
+En una medición local de referencia, mover el cursor a otro monitor y verificarlo
+con Hyprland tomó `9.36 ms` end-to-end (incluyendo la consulta posterior).
+Como comparación concreta, una captura completa más una inferencia real con
+`ornith-1.5:9b` tomó `32794.47 ms`; esa es la latencia que el fast-path evita
+para una orden con coordenadas explícitas.
+
 ## Configuración y rendimiento
 
 La configuración principal está en [`core/config/config.json`](./core/config/config.json).
@@ -284,6 +314,41 @@ source crewai-env/bin/activate
 python -m pytest tests
 python -m py_compile run.py tui/app.py core/agent/graph_nodes.py
 ```
+
+### Runtime de Roblox
+
+La automatización específica de Roblox vive en el repositorio separado
+`~/aether-roblox`. Aether conserva las primitivas genéricas de control y se
+conecta al runtime mediante `core.tools.roblox_bridge`.
+
+Desde la TUI se controla todo con un único comando:
+
+```text
+/play-roblox
+/play-roblox google
+/play-roblox status
+/play-roblox stop
+```
+
+El arranque busca y enfoca `org.vinegarhq.Sober` antes de lanzar el runtime.
+Por defecto usa Ollama; `/play-roblox google` selecciona Google Cloud Vision
+para ese arranque. La credencial debe existir en el entorno, sin guardarla en
+`config.json`:
+
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS="$HOME/.config/gcloud/application_default_credentials.json"
+# o: export GOOGLE_API_KEY="..."
+```
+
+Instalá el extra del runtime una vez:
+
+```bash
+cd ~/aether-roblox
+venv/bin/pip install -e '.[google]'
+```
+
+El runtime coordina percepción, reacción, movimiento WASD y cámara para evitar
+que varios loops compitan por el foco o los dispositivos de entrada.
 
 Para comprobar que el grafo compila:
 

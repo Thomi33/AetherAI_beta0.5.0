@@ -31,6 +31,7 @@ from tui.widgets.selector_screens import (
 from tui.engine_bridge import (
     iter_eventos,
     inicializar_motor,
+    calentar_modelo,
     obtener_historial_para_mostrar,
     NodeUpdateEvent,
     StdoutLineEvent,
@@ -57,7 +58,7 @@ SLASH_HELP = (
     "  /effort                — nivel de esfuerzo (low/medium/high/max)\n"
     "  /agents                — cambiar agente\n"
     "  /new                   — nueva sesión\n"
-    "  /pay-roblox            — enfocar Sober e iniciar/detener autonomía Roblox\n"
+    "  /play-roblox [google]  — iniciar/detener autonomía Roblox\n"
     "  /stop                  — detener la inferencia actual"
 )
 
@@ -160,6 +161,7 @@ class AetherApp(App):
             inicializar_motor()
             from core.agent.graph_builder import get_graph
             get_graph()
+            calentar_modelo()
             historial = obtener_historial_para_mostrar()
             chat_panel = self.query_one("#chat_panel", ChatPanel)
             self.call_from_thread(chat_panel.cargar_historial, historial)
@@ -381,8 +383,8 @@ class AetherApp(App):
             else:
                 self._abrir_memory_editor()
 
-        elif cmd == "/pay-roblox":
-            self._manejar_pay_roblox(partes[1].lower() if len(partes) > 1 else "start")
+        elif cmd in {"/play-roblox", "/pay-roblox"}:
+            self._manejar_play_roblox(partes[1].lower() if len(partes) > 1 else "start")
 
         elif cmd == "/agents":
             self._abrir_agent_selector()
@@ -393,22 +395,36 @@ class AetherApp(App):
         else:
             chat_panel.agregar_mensaje(f"⚠️ Comando desconocido: {cmd}. Probá /help", "assistant")
 
-    def _manejar_pay_roblox(self, accion: str) -> None:
-        """Controls the separate Roblox runtime through one lifecycle command."""
+    def _manejar_play_roblox(self, accion: str) -> None:
+        """Controla el runtime Roblox y permite elegir el proveedor de visión."""
         from core.tools.roblox_bridge import RobloxRuntime
         chat_panel = self.query_one("#chat_panel", ChatPanel)
-        if self._roblox_runtime is None:
-            self._roblox_runtime = RobloxRuntime()
         try:
             if accion == "stop":
-                ok, message = self._roblox_runtime.stop()
-            elif accion in {"start", "status"}:
-                if accion == "start":
+                if self._roblox_runtime is None:
+                    ok, message = False, "Roblox autónomo no está activo."
+                else:
+                    ok, message = self._roblox_runtime.stop()
+            elif accion in {"start", "status", "google", "ollama", "hybrid"}:
+                if accion in {"google", "ollama", "hybrid"}:
+                    if self._roblox_runtime is not None and self._roblox_runtime.running:
+                        ok, message = False, "Detené el runtime antes de cambiar el proveedor."
+                    else:
+                        self._roblox_runtime = RobloxRuntime(vision_provider=accion)
+                        ok, message = self._roblox_runtime.start()
+                elif accion == "start":
+                    if self._roblox_runtime is None:
+                        self._roblox_runtime = RobloxRuntime()
                     ok, message = self._roblox_runtime.start()
                 else:
-                    ok, message = True, "Roblox autónomo activo." if self._roblox_runtime.running else "Roblox autónomo detenido."
+                    ok = True
+                    message = (
+                        f"Roblox autónomo activo (visión: {self._roblox_runtime.vision_provider})."
+                        if self._roblox_runtime is not None and self._roblox_runtime.running
+                        else "Roblox autónomo detenido."
+                    )
             else:
-                ok, message = False, "Uso: /pay-roblox [stop|status]"
+                ok, message = False, "Uso: /play-roblox [start|stop|status|google|ollama|hybrid]"
         except (OSError, RuntimeError, ValueError) as exc:
             ok, message = False, str(exc)
         prefix = "✅" if ok else "⚠️"

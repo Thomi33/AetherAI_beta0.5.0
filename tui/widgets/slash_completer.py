@@ -23,7 +23,7 @@ SLASH_COMMANDS = [
     ("/mcps",      "Toggle MCPs"),
     ("/memory",    "Editar resumen de memoria"),
     ("/models",    "Switch model"),
-    ("/pay-roblox", "Enfocar Sober e iniciar/detener autonomía Roblox"),
+    ("/play-roblox", "Iniciar Roblox; opcionalmente usar google u ollama"),
     ("/new",       "New session"),
     ("/sesiones",  "List sessions"),
     ("/set",       "Set config value"),
